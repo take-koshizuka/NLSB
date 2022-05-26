@@ -1,0 +1,54 @@
+{
+    "seed": 57,
+    "epochs": 800,
+    "LMT": -1,
+    "checkpoint_period": 100,
+    "train_size": 2048,
+    "val_size": 512,
+    "dataset": {
+        "name": "ornstein-uhlenbeck-sde",
+        "batch_size": 512,
+        "val_batch_size": 512,
+        "t_size": 4,
+        "mu": [
+            0.4
+        ],
+        "theta": [
+            0.1
+        ],
+        "sigma": 0.8
+    },
+    "model_name": "trajectorynet",
+    "model": {
+        "input_dim": 1,
+        "time_scale": 1.0,
+        "int_t_to_noise": 1.0,
+        "diffeq_cfg": {
+            "hidden_dims": [
+                16,
+                16,
+                16
+            ]
+        },
+        "odefunc_cfg": {
+            "residual": false,
+            "rademacher": false
+        },
+        "criterion_cfg": {
+            "alpha_L": [
+                0.35,
+                0.35,
+                0.002,
+                0.002
+            ]
+        },
+        "solver_cfg": {
+            "method": "dopri5",
+            "atol": 1e-05,
+            "rtol": 1e-05
+        }
+    },
+    "optim": {
+        "lr": 0.001
+    }
+}

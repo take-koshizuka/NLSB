@@ -1,0 +1,43 @@
+{
+    "seed": 57,
+    "epochs": 10000,
+    "LMT": 1,
+    "checkpoint_period": 1000,
+    "dataset": {
+        "name": "scRNA",
+        "train_data_path": "data/train_rna.npz",
+        "val_data_path": "data/val_rna.npz",
+        "test_data_path": "data/test_rna.npz",
+        "batch_size": 1000,
+        "val_batch_size": 100,
+        "dim": 5
+    },
+    "model_name": "trajectorynet",
+    "model": {
+        "input_dim": 5,
+        "int_t_to_noise": 0.5,
+        "time_scale": 0.5,
+        "diffeq_cfg": {
+            "hidden_dims": [
+                64,
+                64,
+                64
+            ]
+        },
+        "odefunc_cfg": {
+            "residual": false,
+            "rademacher": false
+        },
+        "criterion_cfg": {
+            "alpha_L": 0.0
+        },
+        "solver_cfg": {
+            "method": "dopri5",
+            "atol": 1e-05,
+            "rtol": 1e-05
+        }
+    },
+    "optim": {
+        "lr": 0.001
+    }
+}

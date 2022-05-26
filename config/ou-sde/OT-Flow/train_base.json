@@ -1,0 +1,55 @@
+{
+    "seed": 57,
+    "epochs": 5000,
+    "LMT": -1,
+    "checkpoint_period": 1000,
+    "train_size": 2048,
+    "val_size": 512,
+    "dataset": {
+        "name": "ornstein-uhlenbeck-sde",
+        "batch_size": 512,
+        "val_batch_size": 512,
+        "t_size": 4,
+        "mu": [
+            0.4
+        ],
+        "theta": [
+            0.1
+        ],
+        "sigma": 0.8
+    },
+    "model_name": "ot-flow",
+    "model": {
+        "input_dim": 1,
+        "int_t_to_noise": 1.0,
+        "time_scale": 1.0,
+        "potential_cfg": {
+            "nTh": 2,
+            "m": 32
+        },
+        "criterion_cfg": {
+            "alpha_L": [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "alpha_R": [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        },
+	"solver_cfg": {
+            "method": "euler",
+            "alph": 1.0,
+            "atol": 1e-05,
+            "rtol": 1e-05,
+            "dt": 1e-2
+        }
+    },
+    "optim": {
+        "lr": 0.001
+    }
+}

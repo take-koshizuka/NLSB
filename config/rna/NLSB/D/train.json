@@ -1,0 +1,57 @@
+{
+    "seed": 57,
+    "epochs": 2500,
+    "LMT": -1,
+    "checkpoint_period": 200,
+    "dataset": {
+        "name": "scRNA",
+        "train_data_path": "data/train_rna.npz",
+        "val_data_path": "data/val_rna.npz",
+        "test_data_path": "data/test_rna.npz",
+        "batch_size": 1000,
+        "val_batch_size": 200,
+        "dim": 5,
+	"use_v": false
+    },
+    "model_name": "ito",
+    "model": {
+        "noise_type": "diagonal",
+        "sigma_type": "MLP",
+        "input_dim": 5,
+        "brownian_size": 5,
+        "drift_cfg": {
+            "nTh": 2,
+            "m": 32,
+            "use_t": true
+        },
+        "diffusion_cfg": {
+            "hidden_dim": 16,
+            "num_layers": 2,
+            "tanh": true,
+            "use_t": true
+        },
+        "criterion_cfg": {
+            "alpha_D": 1.0,
+            "alpha_L": 0.01,
+            "alpha_R": 0.001,
+            "p": 2,
+            "blur": 0.05
+        },
+        "solver_cfg": {
+            "adjoint": false,
+            "dt": 0.01,
+            "method": "euler",
+            "adaptive": false
+        }
+    },
+    "lagrangian_name": "cellular",
+    "lagrangian": {
+        "n_components_list": [9, 9, 7, 8],
+        "lm_u2": 0.0,
+        "lm_U": 10.0,
+        "lm_v": 0.0
+    },
+    "optim": {
+        "lr": 0.001
+    }
+}

@@ -1,0 +1,12 @@
+{
+    "seed" : 57,
+    "num_points": 1000,
+    "num_timepoints": 7,
+    "num_repeat": 100,
+    "p" : 1,
+    "score_estimation": {
+        "estimator": "tikhonov",
+        "kernel": "curlfree_imq",
+        "lam": 0.0001
+    }
+}

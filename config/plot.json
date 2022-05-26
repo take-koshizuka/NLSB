@@ -1,0 +1,14 @@
+{
+    "seed" : 20,
+    "num_points": 200,
+    "num_trajectory": 14,
+    "num_repeat": 100,
+    "cov_interval": 0.2,
+    "split": true,
+    "show_cov": true,
+    "score_estimation": {
+        "estimator": "tikhonov",
+        "kernel": "curlfree_imq",
+        "lam": 0.0001
+    }
+}
