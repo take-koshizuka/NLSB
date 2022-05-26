@@ -1,5 +1,3 @@
-import numpy as np
-from numpy.core.multiarray import dot
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +5,7 @@ import copy
 import math
 from torchdiffeq import odeint_adjoint as odeint
 
+# from https://github.com/EmoryMLIP/OT-Flow/blob/master/src/Phi.py
 def antiderivTanh(x): # activation function aka the antiderivative of tanh
     return torch.abs(x) + torch.log(1+torch.exp(-2.0*torch.abs(x)))
 
@@ -189,50 +188,6 @@ class Phi(nn.Module):
 
         return grad.t(), trH + torch.trace(symA[0:d,0:d])
         # indexed version of: return grad.t() ,  trH + torch.trace( torch.mm( E.t() , torch.mm(  symA , E) ) )
-
-
-def stepRK4(odefun, z, Phi, alph, t0, t1):
-    """
-        Runge-Kutta 4 integration scheme
-    :param odefun: function to apply at every time step
-    :param z:      tensor nex-by-d+4, inputs
-    :param Phi:    Module, the Phi potential function
-    :param alph:   list, the 3 alpha values for the OT-Flow Problem
-    :param t0:     float, starting time
-    :param t1:     float, end time
-    :return: tensor nex-by-d+4, features at time t1
-    """
-
-    h = t1 - t0 # step size
-    z0 = z
-
-    K = h * odefun(z0, t0, Phi, alph=alph)
-    z = z0 + (1.0/6.0) * K
-
-    K = h * odefun( z0 + 0.5*K , t0+(h/2) , Phi, alph=alph)
-    z += (2.0/6.0) * K
-
-    K = h * odefun( z0 + 0.5*K , t0+(h/2) , Phi, alph=alph)
-    z += (2.0/6.0) * K
-
-    K = h * odefun( z0 + K , t0+h , Phi, alph=alph)
-    z += (1.0/6.0) * K
-
-    return z
-
-def stepRK1(odefun, z, Phi, alph, t0, t1):
-    """
-        Runge-Kutta 1 / Forward Euler integration scheme.  Added for comparison, but we recommend stepRK4.
-    :param odefun: function to apply at every time step
-    :param z:      tensor nex-by-d+4, inputs
-    :param Phi:    Module, the Phi potential function
-    :param alph:   list, the 3 alpha values for the mean field game problem
-    :param t0:     float, starting time
-    :param t1:     float, end time
-    :return: tensor nex-by-d+4, features at time t1
-    """
-    z += (t1 - t0) * odefun(z, t0, Phi, alph=alph)
-    return z
 
 def C(z):
     """Expected negative log-likelihood; see Eq.(3) in the paper"""

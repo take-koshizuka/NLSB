@@ -1,24 +1,14 @@
 
 import torch
-import torch.nn.functional as F
 import numpy as np
 import json
 import random
 import argparse
-
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 from pathlib import Path
 
-from dataset import GeometricBrownianMotion_Dataset, OrnsteinUhlenbeckSDE_Dataset, CircleTestData
+from dataset import OrnsteinUhlenbeckSDE_Dataset
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME
 import matplotlib.pyplot as plt
-
-try:
-    import apex.amp as amp
-    AMP = True
-except ImportError:
-    AMP = False
 
 
 def fix_seed(seed):
@@ -49,13 +39,11 @@ def main(eval_config_path, checkpoint_path, out_dir):
     Path(out_dir).mkdir(exist_ok=True, parents=True)
 
     data_size = eval_cfg['num_points']
-    if train_cfg['dataset']['name'] == "ornstein-uhlenbeck-sde":
-        tr_ds = OrnsteinUhlenbeckSDE_Dataset(device=device, t_size=train_cfg['dataset']['t_size'], data_size=train_cfg['train_size'], mu=train_cfg['dataset']['mu'], 
-                                            theta=train_cfg['dataset']['theta'], sigma=train_cfg['dataset']['sigma'])
-        ds = OrnsteinUhlenbeckSDE_Dataset(device=device, t_size=train_cfg['dataset']['t_size'], data_size=data_size, mu=train_cfg['dataset']['mu'], 
-                                            theta=train_cfg['dataset']['theta'], sigma=train_cfg['dataset']['sigma'])
-    else:
-        raise NotImplementedError
+    assert train_cfg['dataset']['name'] == "ornstein-uhlenbeck-sde":
+    tr_ds = OrnsteinUhlenbeckSDE_Dataset(device=device, t_size=train_cfg['dataset']['t_size'], data_size=train_cfg['train_size'], mu=train_cfg['dataset']['mu'], 
+                                        theta=train_cfg['dataset']['theta'], sigma=train_cfg['dataset']['sigma'])
+    ds = OrnsteinUhlenbeckSDE_Dataset(device=device, t_size=train_cfg['dataset']['t_size'], data_size=data_size, mu=train_cfg['dataset']['mu'], 
+                                        theta=train_cfg['dataset']['theta'], sigma=train_cfg['dataset']['sigma'])
     
     t_set = ds.get_label_set()
     samples = {}

@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchdiffeq import odeint_adjoint as odeint
 
+# from https://github.com/KrishnaswamyLab/TrajectoryNet/blob/master/TrajectoryNet/lib/layers/diffeq_layers/basic.py
 class ConcatSquashLinear(nn.Module):
     def __init__(self, dim_in, dim_out):
         super(ConcatSquashLinear, self).__init__()
@@ -16,6 +17,7 @@ class ConcatSquashLinear(nn.Module):
             + self.hyper_bias(t.view(1, 1))
         return out
 
+# from # https://github.com/KrishnaswamyLab/TrajectoryNet/blob/master/TrajectoryNet/lib/layers/odefunc.py
 class ODEnet(nn.Module):
     """
     Helper class to make neural nets for use in continuous normalizing flows
@@ -148,5 +150,3 @@ class TrajectoryNet(nn.Module):
 
     def parameters_lr(self):
         return self.parameters()
-    
-    
