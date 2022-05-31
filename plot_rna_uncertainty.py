@@ -34,7 +34,7 @@ cmap_colors_fill = [plt.get_cmap("Blues"), plt.get_cmap("Oranges"), plt.get_cmap
 fill_color = '#9ebcda'
 mean_color = '#4d004b'
 
-def main(eval_config_path, checkpoint_path_sde, checkpoint_path_ode, out_dir):
+def main(eval_cfg, checkpoint_path_sde, checkpoint_path_ode, out_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     checkpoint_dir = str(Path(checkpoint_path_sde).parent)
@@ -47,9 +47,6 @@ def main(eval_config_path, checkpoint_path_sde, checkpoint_path_ode, out_dir):
     with open(train_config_path, 'r') as f:
         train_cfg_ode = json.load(f)
     
-    
-    with open(eval_config_path, 'r') as f:
-        eval_cfg = json.load(f)
     fix_seed(eval_cfg['seed'])
     Path(out_dir).mkdir(exist_ok=True, parents=True)
 
@@ -155,6 +152,9 @@ if __name__ == '__main__':
     parser.add_argument('-path_sde', '-ps', help="Path to the checkpoint of the sde model", type=str, required=True)
     parser.add_argument('-path_ode', '-po', help="Path to the checkpoint of the ode model", type=str, required=True)
     parser.add_argument('-outdir', '-o', help="Path to the output directory", type=str, required=True)
-
+    parser.add_argument('-seed', '-s', type=int, default=1)
     args = parser.parse_args()
-    main(args.config, Path(args.path_sde), Path(args.path_ode), args.outdir)
+    with open(args.config, 'r') as f:
+        cfg = json.load(f)
+    cfg['seed'] = args.seed
+    main(cfg, Path(args.path_sde), Path(args.path_ode), args.outdir)

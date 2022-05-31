@@ -229,5 +229,5 @@ if __name__ == '__main__':
 
     with open(args.config, 'r') as f:
         cfg = json.load(f)
-
+    cfg['seed'] = args.seed
     main(cfg, Path(args.dir), args.resume, args.gpu, args.me)

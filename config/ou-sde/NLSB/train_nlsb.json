@@ -40,8 +40,18 @@
         },
         "criterion_cfg": {
             "alpha_D": 1.0,
-            "alpha_L": [0.02, 0.02, 0.0, 0.0],
-            "alpha_R": [0.2, 0.2, 0.0, 0.0],
+            "alpha_L": [
+                0.3,
+                0.1,
+                0.01,
+                0.0001
+            ],
+            "alpha_R": [
+                0.2,
+                0.01,
+                0.0001,
+                0.0001
+            ],
             "p": 2,
             "blur": 0.05
         },
@@ -54,11 +64,5 @@
     },
     "optim": {
         "lr": 0.001
-    },
-    "tuning": {
-        "percentile": 50.0,
-        "n_startup_trials": 5,
-        "n_warmup_steps": 500,
-        "interval_steps": 10
     }
 }

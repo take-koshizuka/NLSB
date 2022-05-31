@@ -1,5 +1,4 @@
 {
-    "seed" : 57,
     "num_points": 1000,
     "num_timepoints": 7,
     "num_repeat": 100,

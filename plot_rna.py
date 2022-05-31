@@ -29,11 +29,9 @@ sample_colors = plt.get_cmap("tab10")
 fill_color = '#9ebcda'
 mean_color = '#4d004b'
 
-def main(eval_config_path, checkpoint_path, out_dir):
+def main(eval_cfg, checkpoint_path, out_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = str(Path(checkpoint_path).parent)
-    with open(eval_config_path, 'r') as f:
-        eval_cfg = json.load(f)
     fix_seed(eval_cfg['seed'])
 
     train_config_path = Path(checkpoint_dir) / "train_config.json"
@@ -338,6 +336,9 @@ if __name__ == '__main__':
     parser.add_argument('-config', '-c', help="Path to the configuration file for conversion.", type=str, required=True)
     parser.add_argument('-path', '-p', help="Path to the checkpoint of the model", type=str, required=True)
     parser.add_argument('-outdir', '-o', help="Path to the output directory", type=str, required=True)
-
+    parser.add_argument('-seed', '-s', type=int, default=20)
     args = parser.parse_args()
-    main(args.config, Path(args.path), args.outdir)
+    with open(args.config, 'r') as f:
+        cfg = json.load(f)
+    cfg['seed'] = args.seed
+    main(cfg, Path(args.path), args.outdir)

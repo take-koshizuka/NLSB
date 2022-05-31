@@ -201,18 +201,9 @@ if __name__ == '__main__':
     parser.add_argument('-dir', '-d', help="Path to the directory where the checkpoint of the model is stored.", type=str, required=True)
     parser.add_argument('-resume', '-r', help="Path to the checkpoint of the model you want to resume training.", type=str, default="")
     parser.add_argument('-gpu', type=int, default=0)
-    parser.add_argument('-seed', '-s', type=int, default=57)
-
-    
+    parser.add_argument('-seed', '-s', type=int, default=57) 
     args = parser.parse_args()
-
-    ## example
-    # args.config = "config/train.json"
-    # args.dir = "checkpoints/tmp"
-    # args.resume = "checkpoints/tmp/best-model.pt"
-    ##
-
     with open(args.config, 'r') as f:
         cfg = json.load(f)
-
+    cfg['seed'] = args.seed
     main(cfg, Path(args.dir), args.resume, args.gpu)

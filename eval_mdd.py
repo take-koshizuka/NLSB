@@ -22,11 +22,9 @@ def fix_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 
-def main(eval_config_path, checkpoint_path):
+def main(eval_cfg, checkpoint_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = Path(checkpoint_path).parent
-    with open(eval_config_path, 'r') as f:
-        eval_cfg = json.load(f)
     fix_seed(eval_cfg['seed'])
     train_config_path = Path(checkpoint_dir) / "train_config.json"
     with open(train_config_path, 'r') as f:
@@ -76,7 +74,6 @@ def main(eval_config_path, checkpoint_path):
 
         with open(str(checkpoint_dir / f"mdd.json"), "w") as f:
             json.dump({
-                'seed': eval_cfg['seed'],
                 'L1': { 'one-step' : one_step_L1, 'all-step' : all_step_L1 },
                 'L2': { 'one-step' : one_step_L2, 'all-step' : all_step_L2 } }, f, indent=4)
     
@@ -84,7 +81,7 @@ def main(eval_config_path, checkpoint_path):
         one_step, all_step = eval_ou_sde(ds, model, eval_cfg, MODEL)
 
         with open(str(checkpoint_dir / f"mdd.json"), "w") as f:
-            json.dump({ 'seed': eval_cfg['seed'], 'one-step' : one_step, 'all-step' : all_step }, f, indent=4)
+            json.dump({ 'one-step' : one_step, 'all-step' : all_step }, f, indent=4)
         print({ 'one-step' : one_step, 'all-step' : all_step })
 
 
@@ -262,6 +259,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-config', '-c', help="Path to the configuration file for conversion.", type=str, required=True)
     parser.add_argument('-path', '-p', help="Path to the checkpoint of the model", type=str, required=True)
-
+    parser.add_argument('-seed', '-s', type=int, default=1)
     args = parser.parse_args()
-    main(args.config, Path(args.path))
+    with open(args.config, 'r') as f:
+        cfg = json.load(f)
+    cfg['seed'] = args.seed
+    main(cfg, Path(args.path))

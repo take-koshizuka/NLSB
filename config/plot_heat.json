@@ -1,5 +1,4 @@
 {
-    "seed" : 57,
     "num_points": 200,
     "num_timepoints": 1,
     "num_trajectory": 4,

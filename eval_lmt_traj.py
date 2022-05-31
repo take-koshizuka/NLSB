@@ -20,10 +20,8 @@ def fix_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
 
-def main(eval_config_path, checkpoint_path, checkpoint_path_lmt):
+def main(eval_cfg, checkpoint_path, checkpoint_path_lmt):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    with open(eval_config_path, 'r') as f:
-        eval_cfg = json.load(f)
     fix_seed(eval_cfg['seed'])
 
     checkpoint_dir = Path(checkpoint_path).parent
@@ -147,6 +145,9 @@ if __name__ == '__main__':
     parser.add_argument('-config', '-c', help="Path to the configuration file for conversion.", type=str, required=True)
     parser.add_argument('-path', '-p', help="Path to the checkpoint of the model", type=str, required=True)
     parser.add_argument('-path_lmt', '-pl', help="Path to the checkpoint of the model with LMT", type=str, required=True)
-
+    parser.add_argument('-seed', '-s', type=int, default=57)
     args = parser.parse_args()
-    main(args.config, Path(args.path), Path(args.path_lmt))
+    with open(args.config, 'r') as f:
+        cfg = json.load(f)
+    cfg['seed'] = args.seed
+    main(cfg, Path(args.path), Path(args.path_lmt))
