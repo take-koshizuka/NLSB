@@ -1,12 +1,14 @@
 import torch
 from models.gmm import TimeDependentGMM
 from models.potential_2d import Box, Slit, HarmonicOscillator, Hill
+from models.potential import Cubic
 
 POTENTIAL_NAME = {
     "box" : Box,
     "slit": Slit,
     "harmonic_oscillator": HarmonicOscillator,
-    "hill": Hill
+    "hill": Hill,
+    "Cubic": Cubic
 }
 
 def lambda_t(t, lms, intervals):
@@ -71,9 +73,12 @@ class CellularLagrangian:
             return (self.lm_v(t) * v + f) / (1 + self.lm_v(t))
 
 class NewtonianLagrangian:
-    def __init__(self, M, U_cfg, lm_u2=1.0, lm_U=1.0):
+    def __init__(self, M, lm_u2=1.0, lm_U=1.0, U_cfg=None, U=None):
         self.M = M
-        self.U = POTENTIAL_NAME[U_cfg["name"]]()
+        if U is None:
+            self.U = POTENTIAL_NAME[U_cfg["name"]]()
+        else:
+            self.U = U
         self.lm_u2 = lm_u2
         self.lm_U = lm_U
     
@@ -86,7 +91,7 @@ class NewtonianLagrangian:
     
 class NullLagrangian:
     def L(self, t, x, u):
-        return torch.zeros((len(u), 1))
+        return torch.zeros((len(u), 1)).to(x)
 
     def inv_L(self, t, x, f):
         return f

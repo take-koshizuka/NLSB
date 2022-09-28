@@ -1,0 +1,26 @@
+{
+    "seed": 57,
+    "epochs": 800,
+    "LMT": -1,
+    "checkpoint_period": 100,
+    "train_size": 2048,
+    "val_size": 512,
+    "dataset": {
+        "name": "ornstein-uhlenbeck-sde",
+        "batch_size": 512,
+        "val_batch_size": 512,
+        "t_size": 4,
+        "mu": [
+            0.4
+        ],
+        "theta": [
+            0.1
+        ],
+        "sigma": 0.8,
+        "t_0": 0.0,
+        "t_T": 4.0
+    },
+    "optim": {
+        "lr": 0.001
+    }
+}

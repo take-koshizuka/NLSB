@@ -1,25 +1,27 @@
 {
     "seed": 57,
-    "epochs": 1500,
+    "epochs": 2000,
     "LMT": -1,
-    "checkpoint_period": 200,
+    "checkpoint_period": 100,
+    "train_size": 2048,
+    "val_size": 512,
     "dataset": {
-        "name": "scRNA",
-        "train_data_path": "data/train_rna.npz",
-        "val_data_path": "data/val_rna.npz",
-        "test_data_path": "data/test_rna.npz",
-        "batch_size": 1000,
-        "val_batch_size": 200,
-        "dim": 5,
-	"use_v": false
+        "name": "potential-sde",
+        "batch_size": 512,
+        "val_batch_size": 512,
+        "t_size": 4,
+        "a": [1.0, 0.5, 0.1],
+        "sigma": 0.1,
+        "t_0": 0.0,
+        "t_T": 4.0
     },
     "model_name": "ito",
-    "lagrangian_name": "potential-free",
+    "lagrangian_name": "null",
     "model": {
         "noise_type": "diagonal",
         "sigma_type": "MLP",
-        "input_dim": 5,
-        "brownian_size": 5,
+        "input_dim": 3,
+        "brownian_size": 3,
         "drift_cfg": {
             "nTh": 2,
             "m": 32,
@@ -33,18 +35,8 @@
         },
         "criterion_cfg": {
             "alpha_D": 1.0,
-            "alpha_L": [
-                0.1,
-                0.01,
-                0.01,
-                0.01
-            ],
-            "alpha_R": [
-                0.01,
-                0.01,
-                0.001,
-                0.001
-            ],
+            "alpha_L": 0.0,
+            "alpha_R": 0.0,
             "p": 2,
             "blur": 0.05
         },

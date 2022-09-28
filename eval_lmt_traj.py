@@ -90,11 +90,9 @@ def main(eval_cfg, checkpoint_path, checkpoint_path_lmt):
         test_source_data_ = ds.base_sample()['X'].float()
         n = min(ref_n, len(test_source_data_))
         source = ds.base_sample(n)
-        
     else:
         test_source_idx = ds.get_subset_index(t_set[LMT_idx - 1])
         n = min(ref_n, len(test_source_idx))
-
         test_source_idx = ds.get_subset_index(t_set[LMT_idx - 1], n)
         source = ds.get_data(test_source_idx)
 
@@ -102,12 +100,9 @@ def main(eval_cfg, checkpoint_path, checkpoint_path_lmt):
     data_size = test_source_X.size(0)
     test_source_X_lmt = ((test_source_X * param['scale']) + param['mean'] - param_lmt['mean']) / param_lmt['scale']
 
-    test_source_V = source["V"].float() if "V" in source else None
-    test_source_V_lmt = (test_source_V * param['scale']) / param_lmt['scale'] if "V" in source else None
-
     int_time = torch.linspace(float(t0), float(t1), eval_cfg["num_timepoints"])
-    pred_traj = model.sample_with_uncertainty(test_source_X, int_time, eval_cfg["num_repeat"], test_source_V)
-    pred_traj_lmt = model_lmt.sample_with_uncertainty(test_source_X_lmt, int_time, eval_cfg["num_repeat"], test_source_V_lmt)
+    pred_traj = model.sample_with_uncertainty(test_source_X, int_time, eval_cfg["num_repeat"])
+    pred_traj_lmt = model_lmt.sample_with_uncertainty(test_source_X_lmt, int_time, eval_cfg["num_repeat"])
     
     data_size, t_size,  num_repeat, dim = pred_traj_lmt.size()
     param_lmt = ds_lmt.scaler_params()

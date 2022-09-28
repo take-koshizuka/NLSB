@@ -97,6 +97,72 @@ class OrnsteinUhlenbeckSDE_Dataset(TrajectoryInferenceDataset):
         traj = ys.transpose(0, 1)
         return traj
 
+class PotentialSDE_Dataset(TrajectoryInferenceDataset):
+    def __init__(self, device, t_size, dim=3, t_0=0.0, t_T=4.0, data_size=5000, a=[1.0], sigma=0.1):
+        super().__init__()
+        class PotentialSDE(torch.nn.Module):
+            sde_type = 'ito'
+            noise_type = 'scalar'
+
+            def __init__(self, sigma, t_size):
+                super().__init__()
+                self.register_buffer('a', torch.as_tensor(a))
+                self.register_buffer('sigma', torch.as_tensor(sigma))
+                self.t_size = t_size
+
+            def f(self, t, y):
+                return -self.a * (y**2)
+
+            def g(self, t, y):
+                return self.sigma.expand(y.size(0), dim, 1)
+        
+        class Cubic:
+            def __init__(self, a):
+                self.a = torch.as_tensor(a).to(device)
+
+            def __call__(self, x, t):
+                U = torch.sum(self.a * ((x ** 3) / 3), axis=1)
+                return U.unsqueeze(1)
+    
+        self.data_size = data_size
+        self.potential = Cubic(a=a)
+        self.dim = dim
+        self.device = device
+        self.potential_sde = PotentialSDE(sigma=sigma, t_size=t_size).to(device)
+        # 0, ... 1, ... , t_size
+        # self.ts = torch.linspace(0, t_size, t_size*150+1, device=device)
+        self.t_0, self.t_T = t_0, t_T
+        ts = torch.linspace(self.t_0, self.t_T, t_size+1, device=device)
+        y0 = self.base_sample(data_size)["X"]
+        #bm = torchsde.BrownianInterval(t0=ts[0], t1=ts[-1], size=(data_size, brownian_size), device=device)
+        ys = torchsde.sdeint(self.potential_sde, y0, ts).view(len(ts), data_size, self.dim)
+        self.X = ys[1:].view(-1, self.dim)
+        self.labels = np.repeat(ts[1:].cpu(), data_size)
+        self.ncells = self.X.shape[0]
+        self.t_set = sorted(list(set(self.labels.cpu().numpy())))
+
+    # t = 0
+    def base_sample(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.data_size
+        return dict(X=torch.rand(batch_size, self.dim).to(self.device) + 5.0)
+
+    def sample(self, y0, int_time):
+        # shape(y0) = (batch_size, dim)
+        data_size, dim = y0.size()
+        y0, int_time = y0.to(self.device), int_time.to(self.device)
+        ys = torchsde.sdeint(self.potential_sde, y0, int_time).view(len(int_time), data_size, dim)
+        traj = ys.transpose(0, 1)
+        return traj
+
+    def sample_with_uncertainty(self, y0, int_time, num_repeat):
+        # shape(y0) = (batch_size, dim)
+        data_size, dim = y0.size()
+        y0, int_time = y0.to(self.device), int_time.to(self.device)
+        y0 = y0.repeat(1, num_repeat+1).view(-1, dim)
+        ys = torchsde.sdeint(self.potential_sde, y0, int_time).view(len(int_time), data_size, num_repeat+1, dim)
+        traj = ys.transpose(0, 1)
+        return traj
 
 class scRNASeq(TrajectoryInferenceDataset):
     def __init__(self, data_path_list, dim,  use_v=True, LMT=-1, scaler=None):

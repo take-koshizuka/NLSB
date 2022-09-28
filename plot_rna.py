@@ -11,6 +11,7 @@ from utils import decode
 from dataset import scRNASeq
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME, LAGRANGIAN_NAME
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 plt.style.use(['science', 'notebook'])
 
@@ -81,8 +82,12 @@ def main(eval_cfg, checkpoint_path, out_dir):
     for i, t in enumerate(t_set):
         samples[int(t)] = decode(ds.get_data(ds.get_subset_index(t, eval_cfg["num_points"]))["X"].float(), param).cpu().numpy()
         colors[int(t)] = sample_colors(i)
-    pred_samples, pred_traj = one_step_prediction(model, ds, eval_cfg)
+
     
+    pred_samples, pred_traj = one_step_prediction(model, ds, eval_cfg)
+    # ani = make_video(pred_traj, samples, colors, all_step=False)
+    # ani.save(Path(out_dir) / "sample_one_step.gif", writer="pillow")
+
     if MODEL == 'sde':
         fig, axes = plt.subplots(nrows=1, ncols=2,sharex=True, sharey=True, figsize=(10, 5))
         plot_samples_and_trajectory(axes[0], samples, pred_traj, colors=colors, reduce_type=None)
@@ -105,13 +110,18 @@ def main(eval_cfg, checkpoint_path, out_dir):
         plt.savefig(save_path, dpi=300)
 
         # split figure
-        fig, axes = plt.subplots(nrows=1, ncols=len(t_set), sharex=True, sharey=True, figsize=(5*len(t_set), 5))
-        plot_samples_split(axes, samples, pred_samples, colors, ds.T0)
+        fig, axes = plt.subplots(nrows=2, ncols=len(t_set), figsize=(5*len(t_set), 10))
+        plot_samples_split(axes[0, :], samples, samples, colors, ds.T0, dimX=0, dimY=1)
+        plot_samples_split(axes[1, :], samples, samples, colors, ds.T0, dimX=2, dimY=3)
         for i in range(len(t_set)):
-            axes[i].set_xlim([40, 58])
-            axes[i].set_ylim([-15, 20])
-            legend_setting(axes[i], legend=True)
-        save_path = Path(out_dir) / f'samples.png'
+            axes[0, i].set_xlim([40, 58])
+            axes[0, i].set_ylim([-15, 20])
+            axes[1, i].set_xlim([-15, 20])
+            axes[1, i].set_ylim([-15, 18])
+            legend_setting(axes[0, i], legend=True, label=bool(i==0))
+            legend_setting(axes[1, i], dimX=2, dimY=3, xlim=[-13, 20], ylim=[-14, 15], label=bool(i==0))
+            
+        save_path = Path(out_dir) / f'samples.png' 
         plt.savefig(save_path, dpi=300)
     
     else:
@@ -125,8 +135,12 @@ def main(eval_cfg, checkpoint_path, out_dir):
         save_path = Path(out_dir) / f'samples.png'
         plt.savefig(save_path, dpi=300)
 
-
+    
     pred_samples, pred_traj = all_step_prediction(model, ds, eval_cfg)
+    # int_time = torch.linspace(ds.T0, t_set[-1], 160*len(t_set)+1)
+    # ani = make_video(pred_traj, samples, colors, int_time, all_step=True)
+    # ani.save(Path(out_dir) / "sample.gif", writer="pillow")
+
     if MODEL == 'sde':
         fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
         plot_samples_and_trajectory_full(axes[0], samples, pred_traj, pred_samples, colors=colors, reduce_type=None)
@@ -141,11 +155,12 @@ def main(eval_cfg, checkpoint_path, out_dir):
     plt.savefig(save_path, dpi=300)
 
 
-def legend_setting(ax, legend=False, dimX=0, dimY=1, xlim=[48, 58], ylim=[-15, 20]):
-    ax.axes.xaxis.set_ticklabels([])
-    ax.axes.yaxis.set_ticklabels([])
-    ax.set_xlabel(f'PC{dimX+1}')
-    ax.set_ylabel(f'PC{dimY+1}')
+def legend_setting(ax, legend=False, dimX=0, dimY=1, xlim=[40, 58], ylim=[-15, 20], label=False):
+    #ax.axes.xaxis.set_ticklabels([])
+    #ax.axes.yaxis.set_ticklabels([])
+    if label:
+        ax.set_xlabel(f'PC{dimX+1}')
+        ax.set_ylabel(f'PC{dimY+1}')
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     if legend:
@@ -288,14 +303,13 @@ def plot_samples_and_trajectory_split(axes, samples, pred_traj, colors, reduce_t
         for j in range(n_trajectory):
             axes[i].plot(reduced_trajectory[j, :, 0], reduced_trajectory[j, :, 1], color=mean_color, zorder=2)
 
-def plot_samples_split(axes, ref_samples, samples, colors, T0):
+def plot_samples_split(axes, ref_samples, samples, colors, T0, dimX=0, dimY=1):
     # plot samples
-    ts = [T0] + list(samples.keys())
+    ts = list(ref_samples.keys())
     for i in range(len(ts) - 1):
         t0, t1 = ts[i], ts[i+1]
-        axes[i].scatter(ref_samples[t0][:, 0], ref_samples[t0][:, 1], color=colors[t0], alpha=0.8, s=4.0, label=f"$t_{i}$: Day {6*i} to {6*(i)+3} (data)", zorder=1)
-        axes[i].scatter(samples[t1][:, 0], samples[t1][:, 1], color=colors[t1], alpha=0.8, s=4.0, label=f"$t_{i+1}$: Day {6*(i+1)} to {6*(i+1)+3} (pred)", zorder=1)
-
+        axes[i].scatter(ref_samples[t0][:, dimX], ref_samples[t0][:, dimY], color=colors[t0], alpha=0.8, s=4.0, label=f"$t_{i}$: Day {6*i} to {6*(i)+3} (data)", zorder=1)
+        axes[i].scatter(samples[t1][:, dimX], samples[t1][:, dimY], color=colors[t1], alpha=0.8, s=4.0, label=f"$t_{i+1}$: Day {6*(i+1)} to {6*(i+1)+3} (data)", zorder=1)
 
 def plot_samples_and_trajectory_full(ax, samples, pred_traj, pred_samples, colors, reduce_type='mean'):
     ts = samples.keys()
@@ -330,6 +344,64 @@ def plot_samples_and_trajectory_full(ax, samples, pred_traj, pred_samples, color
         ax.set_title(r"$\hat{X}(t) \mid X(0)$")
     elif reduce_type == 'mean':
         ax.set_title(r"$E[\hat{X}(t) \mid X(0)]$")
+
+def make_video(pred_traj, samples, colors, int_time=None, all_step=True):
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot()
+
+    if all_step:
+        reduced_trajectory = pred_traj[:, :, 0, :]
+        n_frames = reduced_trajectory.shape[1]
+        def plot_f(j):
+            ax.cla()
+            ax.set_xlabel(f'PC1')
+            ax.set_ylabel(f'PC2')
+            ax.set_xlim([39, 58])
+            ax.set_ylim([-15, 20])
+            for i, t in enumerate(samples.keys()):
+                ax.scatter(samples[t][:, 0], samples[t][:, 1], color=colors[t], alpha=0.4, s=4.0, zorder=1, label=f"$t_{i}$: Day {6*i} to {6*(i)+3}")
+            ax.legend(markerscale=5.0, fontsize="large", loc='lower left')
+            for k in range(4):
+                if int_time[j] <= (k+1):
+                    text = f'Day {6*k} to {6*k+3} --> Day {6*(k+1)} to {6*(k+1)+3}'
+                    print(j, text)
+                    break
+            ax.set_title(text)
+            ax.scatter(reduced_trajectory[:, j, 0], reduced_trajectory[:, j, 1], color='black', alpha=0.8, s=4.0)
+
+    else:
+        intervals = pred_traj.keys()
+        nfs = []
+        trajs = []
+        for i, T in enumerate(intervals):
+            trajectory = pred_traj[T]
+            reduced_trajectory = trajectory[:, :, 0, :]
+            n_frames = reduced_trajectory.shape[1]
+            trajs.append(reduced_trajectory)
+            nfs.append(n_frames)
+        n_frames = sum(nfs)
+        def plot_f(j):
+            ax.cla()
+            ax.set_xlabel(f'PC1')
+            ax.set_ylabel(f'PC2')
+            ax.set_xlim([39, 58])
+            ax.set_ylim([-15, 20])
+            for i, t in enumerate(samples.keys()):
+                ax.scatter(samples[t][:, 0], samples[t][:, 1], color=colors[t], alpha=0.4, s=4.0, zorder=1, label=f"$t_{i}$: Day {6*i} to {6*(i)+3}")
+            ax.legend(markerscale=5.0, fontsize="large", loc='lower left')
+            
+            for k, nf in enumerate(nfs):
+                if j - nf < 0:
+                    text = f'Day {6*k} to {6*k+3} --> Day {6*(k+1)} to {6*(k+1)+3}'
+                    print(j, text)
+                    ax.set_title(text)
+                    ax.scatter(trajs[k][:, j, 0], trajs[k][:, j, 1], color='black', alpha=0.8, s=4.0)
+                    break
+                else:
+                    j -= nf
+    ani = animation.FuncAnimation(fig, plot_f, interval=20, frames=n_frames)
+    return ani
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

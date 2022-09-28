@@ -9,7 +9,7 @@ from utils import gaussian_nll, compute_emd2
 
 # from models.resnet import ResNet50
 from models.trajectorynet import TrajectoryNet
-from models.ot_sde import OT_SDEIto
+from models.ot_sde import ForwardSDE, ReverseSDE
 from models.ot_flow import OT_flow
 from models.lagrangian import NullLagrangian, PotentialFreeLagrangian, NewtonianLagrangian, CellularLagrangian
 
@@ -20,7 +20,8 @@ ODE_MODEL_NAME = {
 SDE_MODEL_NAME = {
     # "model_name" : model class
     # "resnet50" : ResNet50
-    "ito": OT_SDEIto
+    "ito": ForwardSDE,
+    "rev-sde": ReverseSDE
 }
 
 LAGRANGIAN_NAME = {
@@ -242,9 +243,6 @@ class SDENet(nn.Module):
         }
         if not scheduler is None:
             dic["scheduler"] = deepcopy(scheduler.state_dict())
-        
-        if AMP:
-            dic['amp'] = deepcopy(amp.state_dict())
         return dic
 
     def load_model(self, checkpoint, amp=False):
@@ -258,6 +256,152 @@ class SDENet(nn.Module):
 
     def clamp_parameters(self):
         self.net.clamp_parameters()
+
+class ReverseSDENet(nn.Module):
+    def __init__(self, net, device):
+        super(ReverseSDENet, self).__init__()
+        self.net = net
+        self.device = device
+        self.criterion = self.net.criterion
+
+    def forward(self, ts, x0):
+        return self.net(ts, x0)
+
+    def step(self, batch, batch_idx, t_set, T0):
+        xs = batch['x'].float().to(self.device)
+        ts = batch['t'].float().to(self.device)
+        
+        score = {}
+        assert t_set[0] <= t_set[1]
+        t_set = list(sorted(t_set, reverse=True))
+        
+        for i, t in enumerate(t_set):
+            score[i] = dict()
+            xT = xs[ts == t]
+            
+            if i == len(t_set) - 1:
+                x0 = batch['base']['X'].to(self.device)
+                int_time = [float(t), float(T0)]
+            else:
+                x0 = xs[ts == t_set[i+1]]
+                int_time = [float(t), float(t_set[i+1])]
+
+            res = self.forward(int_time, xT)
+            x0_hat = res['xs'][-1]
+            losses = self.criterion(x0, x0_hat)
+            score[i][f'loss'] = losses['loss']
+
+        score['loss'] = sum([ score[j]['loss'] for j in score.keys() ])
+        return score
+
+    def training_step(self, batch, batch_idx, t_set, T0=0.0):
+        self.train()
+        score = self.step(batch, batch_idx, t_set, T0)
+        return score
+    
+    @torch.no_grad()    
+    def validation_step(self, batch, batch_idx, t_set, T0=0.0):
+        self.eval()
+        score = self.step(batch, batch_idx, t_set, T0)
+        return score
+
+    def training_epoch_end(self, outputs):
+        score = {}
+        ti_set = [ key for key in outputs[0].keys() if not key in ['loss'] ]
+        sum_avg_loss = 0.0
+        for i in ti_set:
+            score[f'k={i}'] = dict(
+                avg_loss=torch.mean(torch.tensor([ out[i]['loss'].item() for out in outputs ]).flatten()).item(),
+            )
+            sum_avg_loss +=  score[f'k={i}'][f"avg_loss"]
+        
+        avg_loss =  sum_avg_loss / len(ti_set)
+        logs = { 'avg_loss' : avg_loss  }
+        logs.update(score)
+        return { 'avg_loss' : avg_loss, 'log' : logs  }
+
+    def validation_epoch_end(self, outputs):
+        score = {}
+        ti_set = [ key for key in outputs[0].keys() if not key in ['loss'] ]
+        sum_avg_loss = 0.0
+        for i in ti_set:
+            score[f'k={i}'] = dict(
+                avg_loss=torch.mean(torch.tensor([ out[i]['loss'].item() for out in outputs ]).flatten()).item()
+            )
+            sum_avg_loss +=  score[f'k={i}'][f"avg_loss"]
+
+        avg_loss =  sum_avg_loss / len(ti_set)
+        logs = { 'avg_loss' : avg_loss }
+        logs.update(score)
+        return { 'avg_loss' : avg_loss, 'log' : logs  }
+
+    @torch.no_grad()
+    def validation(self, ds, t_set):
+        emds = []
+        assert t_set[0] <= t_set[1]
+        t_set = list(sorted(t_set, reverse=True))
+        for i, t in enumerate(t_set):
+            source_idx = ds.get_subset_index(t_set[i])
+            source_X = ds.get_data(source_idx)["X"].float()
+
+            if i == len(t_set) - 1:
+                target_X = ds.base_sample(len(source_X))["X"].float().to(self.device)
+                int_time = [float(t_set[i]), float(ds.T0)]
+            else:
+                target_idx = ds.get_subset_index(t_set[i + 1])
+                target_X = ds.get_data(target_idx)["X"].float()
+                int_time = [float(t), float(t_set[i+1])]
+
+            pred_sample = self.sample(source_X, int_time)
+            emd = compute_emd2(target_X.cpu(), pred_sample[:, -1].cpu())
+            emds.append(emd)
+            
+        return { 'avg_emd' : np.mean(emds), 'emds': emds }
+
+    @torch.no_grad()
+    def sample(self, x0, int_time):
+        self.eval()
+        if int_time[0] >= int_time[1]:
+            res = self.forward(int_time, x0.float().to(self.device))
+            ys = res["xs"].transpose(0, 1)
+        else:
+            raise NotImplementedError
+        return ys
+    
+    @torch.no_grad()
+    def sample_with_uncertainty(self, x0, int_time, num_repeat):
+        batch_size, data_dim = x0.size()
+        x0_ex = x0.repeat(1, num_repeat+1)
+        x0_ex = x0_ex.view(-1, data_dim)
+        
+        self.eval()
+        if int_time[0] >= int_time[1]:
+            res = self.forward(int_time, x0_ex.float().to(self.device))
+            ys = res["xs"].view(len(int_time), batch_size, num_repeat+1, data_dim).transpose(0, 1)
+        else:
+            raise NotImplementedError
+        # (batch_size, int_time, num_repeat, data_dim)
+        return ys
+
+    def state_dict(self, optimizer, scheduler=None):
+        dic =  {
+            "net": deepcopy(self.net.state_dict()),
+            "optimizer": deepcopy(optimizer.state_dict())
+        }
+        if not scheduler is None:
+            dic["scheduler"] = deepcopy(scheduler.state_dict())
+        return dic
+
+    def load_model(self, checkpoint, amp=False):
+        print(f"load model of epoch={checkpoint['epochs']}")
+        self.net.load_state_dict(checkpoint["net"])
+        if amp:
+            amp.load_state_dict(checkpoint["amp"])
+
+    def parameters_lr(self):
+        return self.net.parameters_lr()
+
+
 
 class ODENet(nn.Module):
     def __init__(self, net, device):
@@ -307,7 +451,6 @@ class ODENet(nn.Module):
         loss_D = torch.mean(nll_T[-batch_size:])
         loss_L = loss_R = torch.tensor([0.0])
         losses[0] = { 'loss' : loss_D, 'loss_D': loss_D, 'nll': base_nll, 'loss_L': loss_L, 'loss_R': loss_R }
-        
         for i, t in enumerate(t_set[1:], start=1):
             loss_t = scores[i]
             alpha_L = self.criterion_cfg['alpha_L'][i - 1] if type(self.criterion_cfg['alpha_L']) is list else self.criterion_cfg['alpha_L']
@@ -318,6 +461,8 @@ class ODENet(nn.Module):
             res = self.criterion(batch_size, base_nll, loss_t['log_det'], loss_t['loss_L'], loss_t['loss_R'], alpha_L, alpha_R)
             losses[i] = res
             base_nll = res['nll']
+        
+        losses['loss'] = sum([ losses[key]['loss'] for key in losses.keys()])
         return losses
 
     def training_step(self, batch, batch_idx, t_set, T0=0.0):
@@ -371,9 +516,8 @@ class ODENet(nn.Module):
 
     def training_epoch_end(self, outputs):
         score = {}
-        ti_set = outputs[0].keys()
+        ti_set = [ key for key in outputs[0].keys() if not key in ['loss'] ]
         sum_avg_loss = 0.0
-
         for i in ti_set:
             score[f'k={i}'] = dict(
                 avg_loss=torch.mean(torch.tensor([ out[i]['loss'].item() for out in outputs ]).flatten()).item(),
@@ -390,7 +534,7 @@ class ODENet(nn.Module):
 
     def validation_epoch_end(self, outputs):
         score = {}
-        ti_set = outputs[0].keys()
+        ti_set = [ key for key in outputs[0].keys() if not key in ['loss'] ]
         sum_avg_loss = sum_avg_loss_D = 0.0
         for i in ti_set:
             score[f'k={i}'] = dict(
@@ -411,10 +555,10 @@ class ODENet(nn.Module):
     @torch.no_grad()
     def validation_epoch_end_full(self, outputs):
         score = {}
-        ti_set = outputs[0].keys()
+        ti_set = [ key for key in outputs[0].keys() if not key in ['loss'] ]
         sum_avg_emd = 0.0
         for i in ti_set:
-            score[f'k={i}'][f"avg_emd"] = torch.mean(torch.tensor([ out[t]['emd'] for out in outputs ]).flatten()).item()
+            score[f'k={i}'][f"avg_emd"] = torch.mean(torch.tensor([ out[i]['emd'] for out in outputs ]).flatten()).item()
             sum_avg_emd += score[f'k={i}'][f"avg_emd"]
         
         avg_emd = sum_avg_emd / len(ti_set)
@@ -436,9 +580,7 @@ class ODENet(nn.Module):
         }
         if not scheduler is None:
             dic["scheduler"] = deepcopy(scheduler.state_dict())
-        
-        if AMP:
-            dic['amp'] = deepcopy(amp.state_dict())
+
         return dic
 
     def load_model(self, checkpoint, amp=False):

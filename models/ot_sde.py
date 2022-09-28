@@ -255,14 +255,17 @@ class MLP(torch.nn.Module):
 # Now we define the SDEs.
 ###################
 
-class OT_SDEIto(torchsde.SDEIto):
+class ForwardSDE(torchsde.SDEIto):
     def __init__(self, noise_type, sigma_type, input_dim, brownian_size, drift_cfg, diffusion_cfg, criterion_cfg, solver_cfg, lagrangian=NullLagrangian()):
-        super(OT_SDEIto, self).__init__(noise_type=noise_type)
+        super(ForwardSDE, self).__init__(noise_type=noise_type)
         
         self.noise_type = noise_type
         self.sigma_type = sigma_type
         self.input_dim = input_dim
         self.brownian_size = brownian_size
+        self.drift_cfg = drift_cfg
+        self.criterion_cfg = criterion_cfg
+        self.solver_cfg = solver_cfg
 
         if noise_type == "scalar":
             assert self.brownian_size == 1
@@ -397,9 +400,12 @@ class OT_SDEIto(torchsde.SDEIto):
         h = dv + torch.sum(gradPhi[:, :self.input_dim] * f, dim=1, keepdims=True)
 
         if self.use_t_f:
+            # L1norm
             dr = torch.abs(gradPhi[:,self.input_dim].unsqueeze(1) + prod_Hess_D.unsqueeze(1) + h)
+            #dr = torch.abs(gradPhi[:,self.input_dim].unsqueeze(1) + prod_Hess_D.unsqueeze(1) + h) ** 2
         else:
             dr = torch.abs(prod_Hess_D.unsqueeze(1) + h)
+            # dr = torch.abs(prod_Hess_D.unsqueeze(1) + h) ** 2
         
         x = torch.cat([f, dv, dr], dim=1)
         return x
@@ -443,9 +449,12 @@ class OT_SDEIto(torchsde.SDEIto):
         h = dv + torch.sum(gradPhi[:, :self.input_dim] * f, dim=1, keepdims=True)
 
         if self.use_t_f:
+            # L1norm
             dr = torch.abs(gradPhi[:,self.input_dim].unsqueeze(1) + prod_Hess_D.unsqueeze(1) + h)
+            #dr = torch.abs(gradPhi[:,self.input_dim].unsqueeze(1) + prod_Hess_D.unsqueeze(1) + h) ** 2
         else:
             dr = torch.abs(prod_Hess_D.unsqueeze(1) + h)
+            #dr = torch.abs(prod_Hess_D.unsqueeze(1) + h) ** 2
         
         x = torch.cat([f, dv, dr], dim=1)
         if self.noise_type == "diagonal":
@@ -526,3 +535,53 @@ class OT_SDEIto(torchsde.SDEIto):
     def clamp_parameters(self):
         if self.sigma_type == "param":
             self.sigma.data.clamp_(-5.0, 5.0)
+
+
+class ReverseSDE(torchsde.SDEIto):
+    def __init__(self, fsde):
+        super(ReverseSDE, self).__init__(noise_type=fsde.noise_type)
+        self.noise_type = fsde.noise_type
+        self.sigma_type = fsde.sigma_type
+        self.input_dim = fsde.input_dim
+        self.brownian_size = fsde.brownian_size
+
+        self.fsde = fsde
+        self.df = Phi(**fsde.drift_cfg, d=self.input_dim)
+
+        self.criterion_cfg = fsde.criterion_cfg
+        self.solver_cfg = fsde.solver_cfg
+
+        self.sdeint_fn = torchsde.sdeint
+        self.loss_fn = geomloss.SamplesLoss(loss='sinkhorn', p=self.criterion_cfg['p'], blur=self.criterion_cfg['blur'])
+
+    # --- sdeint ---
+    def f(self, t, y):
+        df = -self.df.grad(-t, y)[:, :self.input_dim]
+        with torch.no_grad():
+            f = self.fsde.f(-t, y)
+        out = -(f - df)
+        return out
+
+    def g(self, t, y):
+        with torch.no_grad():
+            out = -self.fsde.g(-t, y)
+        return out
+
+    def forward(self, ts, xT):
+        assert ts[0] >= ts[1]
+        rev_ts = -torch.tensor(ts)
+        xs = self.sdeint_fn(self, xT, rev_ts, 
+            method=self.solver_cfg['method'], 
+            dt=self.solver_cfg['dt'],
+            adaptive=self.solver_cfg['adaptive'],
+            names={'drift': 'f', 'diffusion': 'g'})
+        
+        assert xs.size(0) == len(ts)
+        return dict(xs=xs[:, :, :self.input_dim])
+
+    def criterion(self, x, x_hat):
+        loss_D = self.loss_fn(x_hat, x)
+        return dict(loss=loss_D, loss_D=loss_D)
+
+    def parameters_lr(self):
+        return self.df.parameters()

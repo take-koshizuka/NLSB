@@ -7,8 +7,9 @@ import argparse
 from pathlib import Path
 
 from dataset import OrnsteinUhlenbeckSDE_Dataset
-from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME
+from model import ODENet, SDENet, ReverseSDENet, SDE_MODEL_NAME, ODE_MODEL_NAME
 import matplotlib.pyplot as plt
+
 
 def fix_seed(seed):
     # random
@@ -24,7 +25,7 @@ sample_colors = plt.get_cmap("tab10")
 fill_color = '#9ebcda'
 mean_color = '#4d004b'
 
-def main(eval_cfg, checkpoint_path, out_dir):
+def main(eval_cfg, checkpoint_path, out_dir, fsde_checkpoint_dir="checkpoints/ou-sde/neuralSDE/NLSB/expM"):
     plt.style.use(['science', 'notebook'])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = str(Path(checkpoint_path).parent)
@@ -34,6 +35,10 @@ def main(eval_cfg, checkpoint_path, out_dir):
     with open(train_config_path, 'r') as f:
         train_cfg = json.load(f)
     Path(out_dir).mkdir(exist_ok=True, parents=True)
+
+    fsde_train_config_path = Path(fsde_checkpoint_dir) / "train_config.json"
+    with open(fsde_train_config_path, 'r') as f:
+        fsde_train_cfg = json.load(f)
 
     data_size = eval_cfg['num_points']
     assert train_cfg['dataset']['name'] == "ornstein-uhlenbeck-sde"
@@ -60,53 +65,50 @@ def main(eval_cfg, checkpoint_path, out_dir):
 
     ref_samples, ref_traj = all_step_prediction(ds, ds, eval_cfg)
     int_time = torch.linspace(ds.T0, t_set[-1], 150*len(t_set)+1)
-    #fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
-    #axes[0].set_ylim([-3.5, 8.5])
-    #axes[1].set_ylim([-3.5, 8.5])
-    #plot_samples_and_trajectory_full(axes[0], int_time, samples, ref_traj, ref_samples, colors=colors, reduce_type=None)
-    #plot_samples_and_trajectory_full(axes[1], int_time, samples, ref_traj, ref_samples, colors=colors, reduce_type='mean')
-    fig, axes = plt.subplots(nrows=1, ncols=1, sharex=True, sharey=True, figsize=(5, 5))
-    plot_samples_and_trajectory_full(axes, int_time, samples, ref_traj, ref_samples, colors=colors, reduce_type=None)
-    axes.set_ylim([-3.5, 8.5])
-    #plot_samples_and_trajectory_full(axes, int_time, samples, ref_traj, ref_samples, colors=colors, reduce_type='mean')
+    fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
+    plot_samples_and_trajectory_full(axes[0], int_time, samples, ref_traj, ref_samples, colors=colors, reduce_type=None)
+    plot_samples_and_trajectory_full(axes[1], int_time, samples, ref_traj, ref_samples, colors=colors, reduce_type='mean')
+    
     save_path = Path(out_dir) / f'ground-truth sde(all_step).png'
     plt.savefig(save_path, dpi=300)
 
     # Define model
-    model_name = train_cfg['model_name'].lower()
+    if 'model_name' in train_cfg:
+        model_name = train_cfg['model_name'].lower()
+    else:
+        model_name = "ito"
+    
     if model_name in SDE_MODEL_NAME:
-        net = SDE_MODEL_NAME[model_name](**train_cfg['model'])
-        model = SDENet(net, device)
+        fnet = SDE_MODEL_NAME["ito"](**fsde_train_cfg['model'])
+        fsde = SDENet(fnet, device)
+        bnet = SDE_MODEL_NAME["rev-sde"](fsde.net)
+        model = ReverseSDENet(bnet, device)
     elif model_name in ODE_MODEL_NAME:
         net = ODE_MODEL_NAME[model_name](**train_cfg['model'])
         model = ODENet(net, device)
     else:
         raise ValueError("The model name does not exist.")
+
     checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
     model.load_model(checkpoint)
     model.to(device)
 
     model.eval()
     # evaluation on test data
-    pred_samples, pred_traj = one_step_prediction(model, ds, eval_cfg)
+    pred_samples, pred_traj = one_step_prediction_backward(model, ds, eval_cfg)
     fig, axes = plt.subplots(nrows=1, ncols=2,sharex=True, sharey=True, figsize=(10, 5))
     plot_samples_and_trajectory(axes[0], samples, pred_traj, colors=colors, reduce_type=None)
     plot_samples_and_trajectory(axes[1], samples, pred_traj, colors=colors, reduce_type='mean')
     save_path = Path(out_dir) / f'one_step_prediction.png'
     plt.savefig(save_path, dpi=300)
 
-    pred_samples, pred_traj = all_step_prediction(model, ds, eval_cfg)
-    int_time = torch.linspace(ds.T0, t_set[-1], 150*len(t_set)+1)
-    fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
-    #axes[0].set_ylim([-3.5, 8.5])
-    #axes[1].set_ylim([-3.5, 8.5])
-    #plot_samples_and_trajectory_full(axes[0], int_time, samples, pred_traj, pred_samples, colors=colors, reduce_type=None)
-    #plot_samples_and_trajectory_full(axes[1], int_time, samples, pred_traj, pred_samples, colors=colors, reduce_type='mean')
-    
+    pred_samples, pred_traj = all_step_prediction_backward(model, ds, eval_cfg)
+    int_time = torch.linspace(t_set[-1], ds.T0, 150*len(t_set)+1)
+    # fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
     fig, axes = plt.subplots(nrows=1, ncols=1, sharex=True, sharey=True, figsize=(5, 5))
-    #plot_samples_and_trajectory_full(axes, int_time, samples, pred_traj, pred_samples, colors=colors, reduce_type=None)
-    #axes.set_ylim([-3.5, 8.5])
-    plot_samples_and_trajectory_full(axes, int_time, samples, pred_traj, pred_samples, colors=colors, reduce_type='mean')
+    plot_samples_and_trajectory_full(axes, int_time, samples, pred_traj, pred_samples, colors=colors, reduce_type=None)
+    #plot_samples_and_trajectory_full(axes[1], int_time, samples, pred_traj, pred_samples, colors=colors, reduce_type='mean')
+    # axes.set_ylim([-3.5, 8.5])
     save_path = Path(out_dir) / f'all_step_prediction.png'
     plt.savefig(save_path, dpi=300)
 
@@ -277,12 +279,10 @@ def plot_samples_and_trajectory_full(ax, int_time, samples, pred_traj, pred_samp
         else:
             raise ValueError("Invalid reduced_type")
     """
-
     if reduce_type is None:
         ax.set_title(r"$\hat{X}(t) \mid X(0)$")
     elif reduce_type == 'mean':
         ax.set_title(r"$E[\hat{X}(t) \mid X(0)]$")
-    
     
 def plot_samples(ax, pred_samples, colors, reduce_type):
     ts = pred_samples.keys()

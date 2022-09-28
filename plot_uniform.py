@@ -27,7 +27,7 @@ sample_colors = plt.get_cmap("Set1")
 fill_color = '#9ebcda'
 mean_color = '#4d004b'
 
-def main(eval_cfg, checkpoint_path, out_dir):
+def main(eval_cfg, checkpoint_path, out_dir, checkpoint_path_L=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = str(Path(checkpoint_path).parent)
     fix_seed(eval_cfg['seed'])
@@ -35,6 +35,14 @@ def main(eval_cfg, checkpoint_path, out_dir):
     train_config_path = Path(checkpoint_dir) / "train_config.json"
     with open(train_config_path, 'r') as f:
         train_cfg = json.load(f)
+
+    checkpoint_dir_L = str(Path(checkpoint_path_L).parent)
+    if not checkpoint_path_L is None:
+        checkpoint_dir_L = str(Path(checkpoint_path_L).parent)
+        train_config_path_L = Path(checkpoint_dir_L) / "train_config.json"
+        with open(train_config_path_L, 'r') as f:
+            train_cfg_L = json.load(f)
+    
     Path(out_dir).mkdir(exist_ok=True, parents=True)
     
     assert train_cfg['dataset']['name'] == "uniform"
@@ -44,7 +52,10 @@ def main(eval_cfg, checkpoint_path, out_dir):
     model_name = train_cfg['model_name'].lower()
     
     assert train_cfg['lagrangian_name'] == "newtonian"
-    L = LAGRANGIAN_NAME["newtonian"](**train_cfg['lagrangian'])
+    if not checkpoint_path_L is None:
+        L = LAGRANGIAN_NAME["newtonian"](**train_cfg_L['lagrangian'])
+    else:
+        L = LAGRANGIAN_NAME["newtonian"](**train_cfg['lagrangian'])
     net = SDE_MODEL_NAME[model_name](**train_cfg['model'], lagrangian=L)
     model = SDENet(net, device)
     
@@ -65,15 +76,16 @@ def main(eval_cfg, checkpoint_path, out_dir):
         colors[int(t)] = sample_colors(i)
 
     pred_samples, pred_traj = one_step_prediction(model, ds, eval_cfg)
-    fig, axes = plt.subplots(nrows=1, ncols=2,sharex=True, sharey=True, figsize=(10, 5))
+    fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
     feature_x = np.arange(-1.5, 1.5, 0.1)
     feature_y = np.arange(-1.5, 1.5, 0.1)
     X, Y = np.meshgrid(feature_x, feature_y)
     uf = np.vectorize(lambda x, y: L.U(torch.tensor([[x, y]]), 0))
     # uf = np.vectorize(lambda x,y : 0)
     Z = uf(X, Y)
-    for i in range(2):
-        axes[i].contourf(feature_x, feature_y, Z, cmap='Blues_r')
+    #for i in range(2):
+    #    CS = axes[i].contourf(feature_x, feature_y, Z, cmap='Blues_r')
+    #    fig.colorbar(CS, ax=axes[i], shrink=0.9)
     
     plot_samples_and_trajectory(axes[0], samples, pred_traj, colors=colors, reduce_type=None)
     plot_samples_and_trajectory(axes[1], samples, pred_traj, colors=colors, reduce_type='mean')
@@ -84,9 +96,11 @@ def main(eval_cfg, checkpoint_path, out_dir):
     plt.savefig(save_path, dpi=300)
 
 
-def legend_setting(ax, legend=False):
-    ax.axes.xaxis.set_ticklabels([])
-    ax.axes.yaxis.set_ticklabels([])
+def legend_setting(ax, xlim=[-1.5, 1.5], ylim=[-1.5, 1.4], legend=False):
+    #ax.axes.xaxis.set_ticklabels([])
+    #ax.axes.yaxis.set_ticklabels([])
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
     if legend:
         ax.legend(markerscale=5.0, fontsize="large", loc='lower left')
 
@@ -150,9 +164,12 @@ if __name__ == '__main__':
     parser.add_argument('-config', '-c', help="Path to the configuration file for conversion.", type=str, required=True)
     parser.add_argument('-path', '-p', help="Path to the checkpoint of the model", type=str, required=True)
     parser.add_argument('-outdir', '-o', help="Path to the output directory", type=str, required=True)
-    parser.add_argument('-seed', '-s', type=int, default=20)
+    parser.add_argument('-seed', '-s', type=int, default=10)
+    parser.add_argument('-path_L', '-pL', help="Path to the checkpoint of the Lagrangian model", type=str)
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         cfg = json.load(f)
     cfg['seed'] = args.seed
-    main(cfg, Path(args.path), args.outdir)
+    if args.path_L is None:
+        args.path_L = args.path
+    main(cfg, Path(args.path), args.outdir, Path(args.path_L))

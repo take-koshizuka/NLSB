@@ -15,7 +15,7 @@ from pathlib import Path
 import argparse
 
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME, LAGRANGIAN_NAME
-from dataset import OrnsteinUhlenbeckSDE_Dataset, BalancedBatchSampler, scRNASeq
+from dataset import OrnsteinUhlenbeckSDE_Dataset, BalancedBatchSampler, scRNASeq, PotentialSDE_Dataset
 
 try:
     import apex.amp as amp
@@ -35,18 +35,14 @@ def fix_seed(seed):
     
 
 def objective(trial, cfg, name, gpu, leave):
-    alpha_L_1 = trial.suggest_float('alpha_L_1', 0.0, 0.5)
-    alpha_R_1 = trial.suggest_float('alpha_R_1', 0.0, 0.5)
-    alpha_L_2 = trial.suggest_float('alpha_L_2', 0.0, 0.5)
-    alpha_R_2 = trial.suggest_float('alpha_R_2', 0.0, 0.5)
-    alpha_L_3 = trial.suggest_float('alpha_L_3', 0.0, 0.5)
-    alpha_R_3 = trial.suggest_float('alpha_R_3', 0.0, 0.5)
-    alpha_L_4 = trial.suggest_float('alpha_L_4', 0.0, 0.5)
-    alpha_R_4 = trial.suggest_float('alpha_R_4', 0.0, 0.5)
-
-    cfg['model']['criterion_cfg']['alpha_L'] = [alpha_L_1, alpha_L_2, alpha_L_3, alpha_L_4]
-    cfg['model']['criterion_cfg']['alpha_R'] = [alpha_R_1, alpha_R_2, alpha_R_3, alpha_R_4]
+    alpha_L = trial.suggest_float('alpha_L', 0.0, 0.5)
+    alpha_R = trial.suggest_float('alpha_R', 0.0, 0.5)
+    #alpha_3 = trial.suggest_float('alpha_3', 0.0, 0.5)
+    #alpha_4 = trial.suggest_float('alpha_4', 0.0, 0.5)
     
+
+    cfg['model']['criterion_cfg']['alpha_L'] = alpha_L
+    cfg['model']['criterion_cfg']['alpha_R'] = alpha_R
 
     checkpoint_dir=f"checkpoints/{name}/exp"
     resume_path=""
@@ -62,9 +58,16 @@ def objective(trial, cfg, name, gpu, leave):
                                         mu=cfg['dataset']['mu'], theta=cfg['dataset']['theta'], sigma=cfg['dataset']['sigma'])
         va_ds = OrnsteinUhlenbeckSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], data_size=cfg['val_size'], 
                                         mu=cfg['dataset']['mu'], theta=cfg['dataset']['theta'], sigma=cfg['dataset']['sigma'])
+    
     elif cfg['dataset']['name'] == "scRNA":
         tr_ds = scRNASeq([cfg['dataset']['train_data_path']], cfg['dataset']['dim'], use_v=cfg['dataset']['use_v'], LMT=leave)
         va_ds = scRNASeq([cfg['dataset']['val_data_path']], cfg['dataset']['dim'], use_v=cfg['dataset']['use_v'], LMT=leave, scaler=tr_ds.get_scaler())
+    
+    elif cfg['dataset']['name'] == "potential-sde":
+        tr_ds = PotentialSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], data_size=cfg['train_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'],
+                                        a=cfg['dataset']['a'], sigma=cfg['dataset']['sigma'])
+        va_ds = PotentialSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], data_size=cfg['val_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], 
+                                        a=cfg['dataset']['a'], sigma=cfg['dataset']['sigma'])
     else:
         raise ValueError("The dataset name does not exist.")
     
@@ -96,7 +99,10 @@ def objective(trial, cfg, name, gpu, leave):
         elif cfg['lagrangian_name'] == "cellular":
             L = LAGRANGIAN_NAME["cellular"](tr_ds.full_data['X'], tr_ds.full_data['t'], **cfg['lagrangian'], device=device)
         elif cfg['lagrangian_name'] == "newtonian":
-            L = LAGRANGIAN_NAME["newtonian"](**cfg['lagrangian'])
+            if cfg['dataset']['name'] == "potential-sde":
+                L = LAGRANGIAN_NAME["newtonian"](**cfg['lagrangian'], U=tr_ds.potential)
+            else:
+                L = LAGRANGIAN_NAME["newtonian"](**cfg['lagrangian'])
         else:
             raise NotImplementedError
         net = SDE_MODEL_NAME[model_name](**cfg['model'], lagrangian=L)
@@ -154,8 +160,7 @@ def objective(trial, cfg, name, gpu, leave):
                 model.clamp_parameters()
             # scheduler.step()
         val_result = model.validation(va_ds, train_t_set)
-        
-        # early_stopping
+
         if early_stopping.judge(val_result):
             early_stopping.update(val_result)
             state_dict = model.state_dict(optimizer)
@@ -190,21 +195,14 @@ if __name__ == '__main__':
         cfg = json.load(f)
 
     search_space = {
-        "alpha_L_1": [0.1, 0.01, 0.001], 
-        "alpha_R_1": [0.1, 0.01, 0.001],
-        "alpha_L_2": [0.1, 0.01, 0.001],
-        "alpha_R_2": [0.1, 0.01, 0.001],
-        "alpha_L_3": [0.1, 0.01, 0.001],
-        "alpha_R_3": [0.1, 0.01, 0.001],
-        "alpha_L_4": [0.1, 0.01, 0.001],
-        "alpha_R_4": [0.1, 0.01, 0.001]
+        "alpha_L": [0.1, 0.01, 0.001],
+        "alpha_R": [0.1, 0.01, 0.001]
     }
 
     study = optuna.create_study(study_name=args.name, direction='minimize', storage=f'sqlite:///{args.name}.db', load_if_exists=True, 
                                     sampler=optuna.samplers.GridSampler(search_space))
     study.optimize(lambda trial: objective(trial, cfg, args.name, args.gpu, args.leave), n_trials=args.trial)
 
-    print(study.best_trials)
     df = study.trials_dataframe(attrs=('number', 'value', 'params', 'state'))
 
     Path("tuning").mkdir(parents=True, exist_ok=True)

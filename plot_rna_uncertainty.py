@@ -135,14 +135,13 @@ def heatmap(axes, data, sde_trajs, sde_samples, ode_trajs, ode_samples):
             # kernel = gaussian_kde(value, bw_method=0.1)
             gmm = GaussianMixture(n_components=5, covariance_type="full")
             gmm.fit(sde_sample[ti, :, :2])
-            F = np.vectorize(lambda x, y: gmm.score_samples(np.array([[x, y]])))
+            F = np.vectorize(lambda x, y: np.exp(gmm.score_samples(np.array([[x, y]]))))
             f = F(xx, yy)
-            levels = np.linspace(np.min(f), np.max(f), 40)
-            axes[0, k].contourf(xx, yy, f, cmap=cmap_colors_fill[i], levels=levels[-3:], alpha=0.3, zorder=0)
-            axes[0, k].contour(xx, yy, f, colors=cmap_colors[i], linewidths=1.0, levels=levels[-3:], zorder=1,)
-            axes[1, k].axes.xaxis.set_ticklabels([])
-            axes[1, k].axes.yaxis.set_ticklabels([])
-            
+            levels = np.linspace(np.min(f), np.max(f), 5)
+            axes[0, k].contourf(xx, yy, f, cmap=cmap_colors_fill[i], levels=levels[1:], alpha=0.3, zorder=0)
+            CS = axes[0, k].contour(xx, yy, f, colors=cmap_colors[i], linewidths=1.0, levels=levels[1:], zorder=1)
+            axes[0, k].clabel(CS, levels[1:], fmt=lambda x: f"{x:.3f}", inline=True, fontsize=10)
+
     axes[0, 0].legend(markerscale=5.0, fontsize="large", loc='lower left')
     axes[1, 0].legend(markerscale=5.0, fontsize="large", loc='lower left')
         
@@ -152,7 +151,7 @@ if __name__ == '__main__':
     parser.add_argument('-path_sde', '-ps', help="Path to the checkpoint of the sde model", type=str, required=True)
     parser.add_argument('-path_ode', '-po', help="Path to the checkpoint of the ode model", type=str, required=True)
     parser.add_argument('-outdir', '-o', help="Path to the output directory", type=str, required=True)
-    parser.add_argument('-seed', '-s', type=int, default=1)
+    parser.add_argument('-seed', '-s', type=int, default=0)
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         cfg = json.load(f)
