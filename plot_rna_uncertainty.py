@@ -12,6 +12,7 @@ from utils import decode
 from dataset import scRNASeq
 from model import SDENet, ODENet, SDE_MODEL_NAME, ODE_MODEL_NAME
 import matplotlib.pyplot as plt
+import scienceplots
 from sklearn.mixture import GaussianMixture
 
 plt.style.use(['science', 'notebook'])

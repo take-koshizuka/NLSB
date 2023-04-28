@@ -26,18 +26,17 @@ class Slit:
         U = Ux * Uy
         return U.unsqueeze(1)
 
-class HarmonicOscillator:
+class Hill:
     def __init__(self, k=5.0):
         self.k = k
 
     def __call__(self, x, t):
         return -0.5 * self.k * torch.sum(torch.pow(x, 2), dim=1, keepdims=True)
 
-class Hill:
+class Well:
     def __init__(self, mu=0, sigma=1.0, h=10.0):
         self.mu = mu
         self.sigma = sigma
         self.h = h
     def __call__(self, x, t):
         return -self.h * torch.exp(-torch.sum(torch.pow(x - self.mu, 2), dim=1, keepdims=True) / self.sigma)
-

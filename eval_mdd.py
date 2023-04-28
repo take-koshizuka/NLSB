@@ -7,7 +7,7 @@ import argparse
 from tqdm import tqdm
 from pathlib import Path
 
-from utils import compute_emd2, marginal_distribution_discrepancy
+from utils import compute_MMD, compute_emd2, marginal_distribution_discrepancy
 from dataset import OrnsteinUhlenbeckSDE_Dataset, scRNASeq
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME, LAGRANGIAN_NAME
 
@@ -39,6 +39,7 @@ def main(eval_cfg, checkpoint_path):
         # LMTを今だけ
         use_v = train_cfg['dataset']['use_v'] if 'use_v' in train_cfg['dataset'] else False
         tr_ds = scRNASeq([train_cfg['dataset']['train_data_path']], train_cfg['dataset']['dim'], use_v=use_v, LMT=train_cfg['LMT'])
+        # va_ds = scRNASeq([train_cfg['dataset']['val_data_path']], train_cfg['dataset']['dim'], use_v=use_v, scaler=tr_ds.get_scaler())
         ds = scRNASeq([train_cfg['dataset']['test_data_path']], train_cfg['dataset']['dim'], use_v=use_v, scaler=tr_ds.get_scaler())
     else:
         raise ValueError("The dataset name does not exist.")
@@ -71,19 +72,22 @@ def main(eval_cfg, checkpoint_path):
             one_step_L1, all_step_L1, one_step_L2, all_step_L2 = eval_rna_sde(ds, model, eval_cfg)
         else:
             one_step_L1, all_step_L1, one_step_L2, all_step_L2 = eval_rna_ode(ds, model, eval_cfg)
-
+        
         with open(str(checkpoint_dir / f"mdd.json"), "w") as f:
             json.dump({
+                'seed' : eval_cfg['seed'],
                 'L1': { 'one-step' : one_step_L1, 'all-step' : all_step_L1 },
-                'L2': { 'one-step' : one_step_L2, 'all-step' : all_step_L2 } }, f, indent=4)
+                'L2': { 'one-step' : one_step_L2, 'all-step' : all_step_L2 },
+            }, f, indent=4)
     
     else:
+
         one_step, all_step = eval_ou_sde(ds, model, eval_cfg, MODEL)
-
         with open(str(checkpoint_dir / f"mdd.json"), "w") as f:
-            json.dump({ 'one-step' : one_step, 'all-step' : all_step }, f, indent=4)
-        print({ 'one-step' : one_step, 'all-step' : all_step })
-
+            json.dump({
+                'seed' : eval_cfg['seed'],
+                'L2': { 'one-step' : one_step, 'all-step' : all_step },
+            }, f, indent=4)
 
 def eval_rna_sde(ds, model, eval_cfg):
     t_set = ds.get_label_set()
@@ -91,9 +95,11 @@ def eval_rna_sde(ds, model, eval_cfg):
     int_times = torch.tensor(int_times)
     ### forward
     ## one-step
-    sum_emds_L2 = []
     forward_one_step_L1 = {}
     forward_one_step_L2 = {}
+
+    sum_emds_L1 = []
+    sum_emds_L2 = []
     for i in tqdm(range(len(t_set))):
         target_idx = ds.get_subset_index(t_set[i])
         target_X = ds.get_data(target_idx)["X"].float()
@@ -118,16 +124,16 @@ def eval_rna_sde(ds, model, eval_cfg):
             emd_L2 = compute_emd2(target_X.cpu(), pred_traj[:, -1, j].cpu(), p=2)
             emds_L1.append(emd_L1)
             emds_L2.append(emd_L2)
-
+        
+        sum_emds_L1.append(np.mean(emds_L1))
         sum_emds_L2.append(np.mean(emds_L2))
         forward_one_step_L1[f't={t1}'] = f'{np.mean(emds_L1)} ± {np.std(emds_L1)}'
         forward_one_step_L2[f't={t1}'] = f'{np.mean(emds_L2)} ± {np.std(emds_L2)}'
 
-    print("[forward] one-step L1:", forward_one_step_L1 )
+    print("[forward] one-step L1:", forward_one_step_L1, 'average: ', np.mean(sum_emds_L1) )
     print("[forward] one-step L2:", forward_one_step_L2, 'average: ', np.mean(sum_emds_L2))
 
     ## all-step
-    
     source = ds.base_sample()
     source_X = source["X"].float()
     source_V = source["V"].float() if "V" in source else None
@@ -141,29 +147,29 @@ def eval_rna_sde(ds, model, eval_cfg):
         emds_L2 = []
         for j in range(eval_cfg['num_repeat']):
             emd_L1 = compute_emd2(target_X.cpu(), pred_traj[:, i+1, j].cpu(), p=1)
-            emd_L2 = compute_emd2(target_X.cpu(), pred_traj[:, i+1, j].cpu(), p=2)
+            emd_L2 = compute_emd2(target_X.cpu(), pred_traj[:, i+1, j].cpu(), p=2)   
             emds_L1.append(emd_L1)
             emds_L2.append(emd_L2)
 
         t1 = t_set[i]
         forward_all_step_L1[f't={t1}'] = f'{np.mean(emds_L1)} ± {np.std(emds_L1)}'
         forward_all_step_L2[f't={t1}'] = f'{np.mean(emds_L2)} ± {np.std(emds_L2)}'
-
     print("[forward] all-step: L1", forward_all_step_L1)
     print("[forward] all-step: L2", forward_all_step_L2)
-
-    return  forward_one_step_L1, forward_all_step_L1, forward_one_step_L2, forward_all_step_L2
-
+    return  forward_one_step_L1, forward_all_step_L1,\
+            forward_one_step_L2, forward_all_step_L2
+    
 def eval_rna_ode(ds, model, eval_cfg):
     t_set = ds.get_label_set()
     int_times = [float(ds.T0)] + [ float(t) for t in t_set ]
     int_times = torch.tensor(int_times)
     ### forward
     ## one-step
-    sum_emds_L2 = []
-    
     forward_one_step_L1 = {}
     forward_one_step_L2 = {}
+
+    sum_emds_L1 = []
+    sum_emds_L2 = []
     for i in tqdm(range(len(t_set))):
         target_idx = ds.get_subset_index(t_set[i])
         target_X = ds.get_data(target_idx)["X"].float()
@@ -181,13 +187,14 @@ def eval_rna_ode(ds, model, eval_cfg):
         emd_L1 = compute_emd2(target_X.cpu(), pred_traj[:, -1].cpu(), p=1)
         emd_L2 = compute_emd2(target_X.cpu(), pred_traj[:, -1].cpu(), p=2)
         
+        sum_emds_L1.append(emd_L1)
         sum_emds_L2.append(emd_L2)
+        
         forward_one_step_L1[f't={t1}'] = emd_L1
         forward_one_step_L2[f't={t1}'] = emd_L2
 
-    print("[forward] one-step L1:", forward_one_step_L1 )
+    print("[forward] one-step L1:", forward_one_step_L1, np.mean(sum_emds_L1))
     print("[forward] one-step L2:", forward_one_step_L2, np.mean(sum_emds_L2))
-
     ## all-step
     source_X = ds.base_sample()["X"].float()
     pred_traj = model.sample(source_X, int_times)
@@ -207,6 +214,7 @@ def eval_rna_ode(ds, model, eval_cfg):
 
     return  forward_one_step_L1, forward_all_step_L1, forward_one_step_L2, forward_all_step_L2
 
+
 def eval_ou_sde(ds, model, eval_cfg, MODEL):
     t_set = ds.get_label_set()
     int_times = [ds.T0]
@@ -218,9 +226,11 @@ def eval_ou_sde(ds, model, eval_cfg, MODEL):
         int_times.extend(list(int_time.cpu().numpy())[1:])
     int_times = torch.tensor(int_times)
 
+    
     #### forward
     # one-step
     forward_one_step = {}
+    """
     for i in tqdm(range(len(t_set))):
         if i == 0:
             source_X = ds.base_sample()["X"].float()
@@ -240,7 +250,7 @@ def eval_ou_sde(ds, model, eval_cfg, MODEL):
         
         mdd_dict = marginal_distribution_discrepancy(ref_traj, pred_traj, int_time)
         forward_one_step[f't0={t0}'] = mdd_dict
-    
+    """
     ## all-step
     forward_all_step = {}
     source_X = ds.base_sample()["X"].float()
@@ -251,7 +261,9 @@ def eval_ou_sde(ds, model, eval_cfg, MODEL):
         pred_traj = model.sample(source_X, int_times)
     mdd_dict = marginal_distribution_discrepancy(ref_traj, pred_traj, int_times)
     forward_all_step[f't0={ds.T0}'] = mdd_dict
-
+    print('mean', [ x['mean'] for x in mdd_dict.values() ])
+    print('std', [ x['std'] for x in mdd_dict.values() ])
+    
     return forward_one_step, forward_all_step
 
 
@@ -259,7 +271,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-config', '-c', help="Path to the configuration file for conversion.", type=str, required=True)
     parser.add_argument('-path', '-p', help="Path to the checkpoint of the model", type=str, required=True)
-    parser.add_argument('-seed', '-s', type=int, default=1)
+    parser.add_argument('-seed', '-s', type=int, default=57)
     args = parser.parse_args()
     with open(args.config, 'r') as f:
         cfg = json.load(f)

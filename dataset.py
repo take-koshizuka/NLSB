@@ -1,5 +1,8 @@
+from collections import namedtuple
 import torch
 import torchsde
+from mfg.mfg import MFG
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset, BatchSampler
 import numpy as np
@@ -7,6 +10,7 @@ import numpy as np
 class TrajectoryInferenceDataset(Dataset):
     def __init__(self):
         self.has_velocity = False
+        self.resample = False
         pass
 
     def get_subset_index(self, t, n=None):
@@ -40,7 +44,7 @@ class TrajectoryInferenceDataset(Dataset):
 
 
 class OrnsteinUhlenbeckSDE_Dataset(TrajectoryInferenceDataset):
-    def __init__(self, device, t_size, t_0=0.0, t_T=4.0, data_size=5000, mu=[0.02], theta=[0.1], sigma=0.4):
+    def __init__(self, device, t_size, t_0=0.0, t_T=4.0, data_size=5000, mu=None, theta=None, sigma=0.4):
         super().__init__()
         class OrnsteinUhlenbeckSDE(torch.nn.Module):
             sde_type = 'ito'
@@ -96,6 +100,91 @@ class OrnsteinUhlenbeckSDE_Dataset(TrajectoryInferenceDataset):
         ys = torchsde.sdeint(self.ou_sde, y0, int_time).view(len(int_time), data_size, num_repeat+1, dim)
         traj = ys.transpose(0, 1)
         return traj
+
+class HighDimOrnsteinUhlenbeckSDE_Dataset(TrajectoryInferenceDataset):
+    def __init__(self, device, t_size, z_dim=5, t_0=0.0, t_T=4.0, data_size=5000, 
+                        mu=None, theta=None, sigma=0.4):
+        super().__init__()
+        if mu is None:
+            mu = torch.linspace(0.5, 1.0, 50)
+            theta = torch.linspace(-1.0, 0.5, 50)
+        
+        class OrnsteinUhlenbeckSDE(torch.nn.Module):
+            sde_type = 'ito'
+            noise_type = 'scalar'
+
+            def __init__(self, mu, theta, sigma, t_size):
+                super().__init__()
+                self.register_buffer('mu', torch.as_tensor(mu))
+                self.register_buffer('theta', torch.as_tensor(theta))
+                self.register_buffer('sigma', torch.as_tensor(sigma))
+                self.t_size = t_size
+
+            def f(self, t, y):
+                return self.mu * t - self.theta * y
+
+            def g(self, t, y):
+                return self.sigma.expand(y.size(0), len(mu), 1) * (2 * t / self.t_size)
+
+        self.data_size = data_size
+        self.dim = len(mu)
+        self.z_dim = z_dim
+        self.device = device
+        self.ou_sde = OrnsteinUhlenbeckSDE(mu=mu, theta=theta, sigma=sigma, t_size=t_size).to(device)
+        # 0, ... 1, ... , t_size
+        # self.ts = torch.linspace(0, t_size, t_size*150+1, device=device)
+        self.t_0, self.t_T = t_0, t_T
+        ts = torch.linspace(self.t_0, self.t_T, t_size+1, device=device)
+        y0 = self.base_sample_y(data_size)["X"]
+        #bm = torchsde.BrownianInterval(t0=ts[0], t1=ts[-1], size=(data_size, brownian_size), device=device)
+        ys = torchsde.sdeint(self.ou_sde, y0, ts).view(-1, self.dim)
+
+        self.pca = PCA(n_components=z_dim)
+        zs = torch.from_numpy(self.pca.fit_transform(ys.cpu()))
+        zs = zs.view(len(ts), data_size, self.z_dim)
+
+        self.X = zs[1:].view(-1, self.z_dim).float()
+        self.labels = np.repeat(ts[1:].cpu(), data_size)
+        self.ncells = self.X.shape[0]
+        self.t_set = sorted(list(set(self.labels.cpu().numpy())))
+        self.P = torch.from_numpy(self.pca.components_).float().to(self.device)
+
+    def base_sample_y(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.data_size
+        return dict(X=torch.rand(batch_size, self.dim).to(self.device) * 2 - 1)
+
+    def base_sample(self, batch_size=None):
+        X = self.base_sample_y(batch_size)["X"]
+        return dict(X=torch.from_numpy(self.pca.transform(X.cpu())).float().to(self.device))
+
+    def sample(self, z0, int_time, y_space=False):
+        # shape(y0) = (batch_size, dim)
+        data_size, dim = z0.size()
+        assert dim == self.z_dim
+        z0, int_time = z0.to(self.device), int_time.to(self.device)
+        zs = torchsde.sdeint(self.ou_sde, z0, int_time).view(len(int_time), data_size, dim)
+        traj = zs.transpose(0, 1)
+        if y_space:
+            ys = self.pca.inverse_transform(zs.view(-1, dim)).view(len(int_time), data_size, self.dim)
+            traj = torch.from_numpy(ys.transpose(0, 1)).float()
+        return traj
+
+    def sample_with_uncertainty(self, z0, int_time, num_repeat, y_space=False):
+        # shape(y0) = (batch_size, dim)
+        data_size, dim = z0.size()
+        assert dim == self.z_dim
+        z0, int_time = z0.to(self.device), int_time.to(self.device)
+        z0 = z0.repeat(1, num_repeat+1).view(-1, dim)
+        zs = torchsde.sdeint(self.ou_sde, z0, int_time).view(len(int_time), data_size, num_repeat+1, dim)
+        traj = zs.transpose(0, 1)
+
+        if y_space:
+            ys = self.pca.inverse_transform(zs.view(-1, dim)).view(len(int_time), data_size, self.dim)
+            traj = torch.from_numpy(ys.transpose(0, 1)).float()
+        
+        return traj
+
 
 class PotentialSDE_Dataset(TrajectoryInferenceDataset):
     def __init__(self, device, t_size, dim=3, t_0=0.0, t_T=4.0, data_size=5000, a=[1.0], sigma=0.1):
@@ -267,7 +356,121 @@ class UniformDataset(TrajectoryInferenceDataset):
         y = (-2) * torch.rand(batch_size, 1) + 1
         init = torch.cat([x, y], dim=1).float()
         return dict(X=init.to(self.device))
+
+class UniformDataset2(TrajectoryInferenceDataset):
+    dim = 2
+    def __init__(self, device, t_0=0.0, t_T=1.0, data_size=5000):
+        super().__init__()
+        t_size = 1
+        self.data_size = data_size
+        self.device = device
+        # 0, ... 1, ... , t_size
+        self.t_0, self.t_T = t_0, t_T
+        x1 = 0.5 * torch.rand(data_size // 2, 1) + 0.75
+        y1 = 0.5 * torch.rand(data_size // 2, 1) + 0.75
+        X1 = torch.cat([x1, y1], dim=1).float()
+        x2 = 0.5 * torch.rand(data_size - data_size // 2, 1) - 1.25
+        y2 = 0.5 * torch.rand(data_size - data_size // 2, 1) - 1.25
+        X2 = torch.cat([x2, y2], dim=1).float()
+        self.X = torch.cat([X1, X2], dim=0).float()
+        self.labels = torch.ones(data_size) * self.t_T
+        self.ncells = self.X.shape[0]
+        self.t_set = sorted(list(set(self.labels.cpu().numpy())))
+
+    # t = 0
+    def base_sample(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.data_size
+        x1 = 0.5 * torch.rand(batch_size // 2, 1) - 1.25
+        y1 = 0.5 * torch.rand(batch_size // 2, 1) + 0.75
+        X1 = torch.cat([x1, y1], dim=1).float()
+
+        x2 = 0.5 * torch.rand(batch_size - batch_size // 2, 1) + 0.75
+        y2 = 0.5 * torch.rand(batch_size - batch_size // 2, 1) - 1.25
+        X2 = torch.cat([x2, y2], dim=1).float()
+        init = torch.cat([X1, X2], dim=0).float()
+        return dict(X=init.to(self.device))
+
+
+class MFGDataset(TrajectoryInferenceDataset):
+    def __init__(self, problem_name, dim, t_0=0.0, t_T=1.0, data_size=5000, batch_size=512,interval=100, diffusion_std=1.0, MF_cost=0.0, device='cpu'):
+        super().__init__()
+        self.resample =True
+        self.dim = dim
+        self.data_size = data_size
+        self.batch_size = batch_size
+        self.device = device
+        self.t_0, self.t_T = t_0, t_T
+        
+        Option = namedtuple('Option', ['problem_name', 't0', 'T', 'interval', 'diffusion_std', 'samp_bs', 'MF_cost', 'x_dim', 'device'])
+        self.opt = Option(
+            problem_name=problem_name,
+            t0=self.t_0,
+            T=self.t_T,
+            interval=interval,
+            diffusion_std=diffusion_std,
+            samp_bs=data_size,
+            MF_cost=MF_cost,
+            x_dim=self.dim,
+            device=device,
+        )
+
+        self.mfg = MFG(self.opt)
+        self.X = self.mfg.sde.pT.sample(batch=self.data_size)
+        self.labels = torch.ones(self.data_size) * self.t_T
+        self.ncells = self.data_size
+        self.t_set = [self.t_T]
+        if self.dim > 100:
+            self.pca_X, self.V, self.mean = self.pca(self.X, 100)
+
+    def resampling(self):
+        del self.X
+        self.X = self.mfg.sde.pT.sample(batch=self.data_size)
+        
+    def base_sample(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.data_size
+        return dict(X=self.mfg.sde.p0.sample(batch=batch_size).to(self.device))
+
+    def get_subset_index(self, t, n=None):
+        idxs = np.arange(self.data_size)[self.labels == t]
+        if not n is None:
+            idxs = np.random.choice(idxs, size=n)
+        return  idxs
     
+    def pca(self, x: torch.Tensor, low_dim=100):
+        B, nx = x.shape
+
+        mean_pca_x = torch.mean(x, dim=0, keepdim=True)
+        y = x - mean_pca_x
+
+        if B > 200:
+            rand_idxs = torch.randperm(B)[:200]
+            y = y[rand_idxs]
+        # U: (batch, k)
+        # S: (k, k)
+        # VT: (k, nx)
+        U, S, VT = torch.linalg.svd(y)
+        D = min(low_dim, nx)
+        # log.info("Singular values of xs_f at final timestep:")
+        # log.info(S)
+        # Keep the first and last directions.
+        VT = VT[:D, :]
+        #VT = VT[[0, -1], :]
+        # assert VT.shape == (D, nx)
+        V = VT.T
+
+        proj_x = y @ V
+
+        self.V = V
+        self.mean = mean_pca_x
+        return proj_x, V, mean_pca_x
+
+    def pca_proj(self, x):
+        if self.dim > 100:
+            return (x - self.mean) @ self.V
+        else:
+            return x
 
 class BalancedBatchSampler(BatchSampler):
     """

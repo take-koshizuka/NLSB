@@ -12,7 +12,7 @@ from pathlib import Path
 import argparse
 
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME, LAGRANGIAN_NAME
-from dataset import OrnsteinUhlenbeckSDE_Dataset, BalancedBatchSampler, scRNASeq, UniformDataset
+from dataset import OrnsteinUhlenbeckSDE_Dataset, BalancedBatchSampler, scRNASeq, UniformDataset, HighDimOrnsteinUhlenbeckSDE_Dataset
 
 try:
     import apex.amp as amp
@@ -45,6 +45,13 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0, me=5000):
                                         mu=cfg['dataset']['mu'], theta=cfg['dataset']['theta'], sigma=cfg['dataset']['sigma'])
         va_ds = OrnsteinUhlenbeckSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], data_size=cfg['val_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'],
                                         mu=cfg['dataset']['mu'], theta=cfg['dataset']['theta'], sigma=cfg['dataset']['sigma'])
+    
+    elif cfg['dataset']['name'] == "ornstein-uhlenbeck-sde":
+        tr_ds = HighDimOrnsteinUhlenbeckSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], z_dim=cfg['dataset']['z_dim'], data_size=cfg['train_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'],
+                                        mu=cfg['dataset']['mu'], theta=cfg['dataset']['theta'], sigma=cfg['dataset']['sigma'])
+        va_ds = HighDimOrnsteinUhlenbeckSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], z_dim=cfg['dataset']['z_dim'], data_size=cfg['val_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'],
+                                        mu=cfg['dataset']['mu'], theta=cfg['dataset']['theta'], sigma=cfg['dataset']['sigma'])
+
     elif cfg['dataset']['name'] == "scRNA":
         tr_ds = scRNASeq([cfg['dataset']['train_data_path']], cfg['dataset']['dim'], use_v=cfg['dataset']['use_v'], LMT=cfg['LMT'])
         va_ds = scRNASeq([cfg['dataset']['val_data_path']], cfg['dataset']['dim'], use_v=cfg['dataset']['use_v'], LMT=cfg['LMT'], scaler=tr_ds.get_scaler())
@@ -78,6 +85,8 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0, me=5000):
     if model_name in SDE_MODEL_NAME:
         if cfg['lagrangian_name'] == "null" or cfg['lagrangian_name'] == "potential-free":
             L = LAGRANGIAN_NAME[cfg['lagrangian_name']]()
+        elif cfg['lagrangian_name'] == "latent-potential-free":
+            L = LAGRANGIAN_NAME[cfg['lagrangian_name']](P=tr_ds.proj)
         elif cfg['lagrangian_name'] == "cellular":
             L = LAGRANGIAN_NAME["cellular"](tr_ds.full_data['X'], tr_ds.full_data['t'], **cfg['lagrangian'], device=device)
         else:

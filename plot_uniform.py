@@ -7,9 +7,11 @@ import random
 import argparse
 
 from pathlib import Path
-from dataset import UniformDataset
+from dataset import UniformDataset, UniformDataset2
 from model import SDENet, SDE_MODEL_NAME, LAGRANGIAN_NAME
 import matplotlib.pyplot as plt
+import scienceplots
+import seaborn as sns
 
 plt.style.use(['science', 'notebook'])
 
@@ -23,7 +25,7 @@ def fix_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
 
-sample_colors = plt.get_cmap("Set1")
+sample_colors = plt.get_cmap("Spectral")
 fill_color = '#9ebcda'
 mean_color = '#4d004b'
 
@@ -45,17 +47,23 @@ def main(eval_cfg, checkpoint_path, out_dir, checkpoint_path_L=None):
     
     Path(out_dir).mkdir(exist_ok=True, parents=True)
     
-    assert train_cfg['dataset']['name'] == "uniform"
-    ds = UniformDataset(device=device, t_0=train_cfg['dataset']['t_0'], t_T=train_cfg['dataset']['t_T'], data_size=eval_cfg['num_points'])
-
+    assert train_cfg['dataset']['name'] == "uniform" or train_cfg['dataset']['name'] == "uniform2"
+    if train_cfg['dataset']['name'] == "uniform":
+        ds = UniformDataset(device=device, t_0=train_cfg['dataset']['t_0'], t_T=train_cfg['dataset']['t_T'], data_size=eval_cfg['num_points'])
+    elif train_cfg['dataset']['name'] == "uniform2":
+        ds = UniformDataset2(device=device, t_0=train_cfg['dataset']['t_0'], t_T=train_cfg['dataset']['t_T'], data_size=eval_cfg['num_points'])
+    else:
+        raise NotImplementedError
     # Define model
     model_name = train_cfg['model_name'].lower()
+    if train_cfg['lagrangian_name'] == "newtonian":
+        if not checkpoint_path_L is None:
+            L = LAGRANGIAN_NAME["newtonian"](**train_cfg_L['lagrangian'])
+        else:
+            L = LAGRANGIAN_NAME["newtonian"](**train_cfg['lagrangian'])
+    elif train_cfg['lagrangian_name'] == "LQ":
+        L = LAGRANGIAN_NAME["LQ"](**train_cfg['lagrangian'], device=device)
     
-    assert train_cfg['lagrangian_name'] == "newtonian"
-    if not checkpoint_path_L is None:
-        L = LAGRANGIAN_NAME["newtonian"](**train_cfg_L['lagrangian'])
-    else:
-        L = LAGRANGIAN_NAME["newtonian"](**train_cfg['lagrangian'])
     net = SDE_MODEL_NAME[model_name](**train_cfg['model'], lagrangian=L)
     model = SDENet(net, device)
     
@@ -76,23 +84,28 @@ def main(eval_cfg, checkpoint_path, out_dir, checkpoint_path_L=None):
         colors[int(t)] = sample_colors(i)
 
     pred_samples, pred_traj = one_step_prediction(model, ds, eval_cfg)
-    fig, axes = plt.subplots(nrows=1, ncols=2, sharex=True, sharey=True, figsize=(10, 5))
-    feature_x = np.arange(-1.5, 1.5, 0.1)
-    feature_y = np.arange(-1.5, 1.5, 0.1)
+    fig, axes = plt.subplots(nrows=1, ncols=6, sharex=True, sharey=True, figsize=(30, 5))
+    feature_x = np.arange(-2.0, 2.0, 0.1)
+    feature_y = np.arange(-2.0, 2.0, 0.1)
     X, Y = np.meshgrid(feature_x, feature_y)
+        # CS = axes[i].contourf(feature_x, feature_y, Z, cmap='Blues_r')
+        # fig.colorbar(CS, ax=axes[i], shrink=0.9)
     uf = np.vectorize(lambda x, y: L.U(torch.tensor([[x, y]]), 0))
-    # uf = np.vectorize(lambda x,y : 0)
+    #uf = np.vectorize(lambda x,y : 0)
     Z = uf(X, Y)
-    #for i in range(2):
-    #    CS = axes[i].contourf(feature_x, feature_y, Z, cmap='Blues_r')
-    #    fig.colorbar(CS, ax=axes[i], shrink=0.9)
+    for i in range(len(axes)):
+        axes[i].contourf(feature_x, feature_y, Z, cmap='Greys_r')
+        axes[i].set_xlim([-1.5, 1.5])
+        axes[i].set_ylim([-1.5, 1.4])
     
-    plot_samples_and_trajectory(axes[0], samples, pred_traj, colors=colors, reduce_type=None)
-    plot_samples_and_trajectory(axes[1], samples, pred_traj, colors=colors, reduce_type='mean')
-    legend_setting(axes[0])
-    legend_setting(axes[1])
+    #plot_samples_and_trajectory(axes[0], samples, pred_traj, colors=colors, reduce_type=None)
+    #plot_samples_and_trajectory(axes[1], samples, pred_traj, colors=colors, reduce_type='mean')
+    #legend_setting(axes[0])
+    #legend_setting(axes[1])
+    colors = [ sample_colors(i) for i in range(sample_colors.N) ]
+    make_snapshot_animation(axes, pred_traj, colors)
 
-    save_path = Path(out_dir) / f'prediction.png'
+    save_path = Path(out_dir) / f'anime.png'
     plt.savefig(save_path, dpi=300)
 
 
@@ -105,29 +118,24 @@ def legend_setting(ax, xlim=[-1.5, 1.5], ylim=[-1.5, 1.4], legend=False):
         ax.legend(markerscale=5.0, fontsize="large", loc='lower left')
 
 def one_step_prediction(model, ds, eval_cfg):
-    pred_samples = {}
-    pred_traj = {}
     t_set = ds.get_label_set()
-    
-    for i in range(len(t_set)):
-        if i == 0:
-            t0, t1 = ds.T0, t_set[i]
-            source = ds.base_sample(eval_cfg["num_points"])["X"].float()
-        else:
-            t0, t1 = t_set[i-1], t_set[i]
-            source = ds.get_data(ds.get_subset_index(t0, eval_cfg["num_points"]))["X"].float()
-        
-        int_time = torch.linspace(t0, t1, 151)
 
-        if hasattr(model, 'sample_with_uncertainty'):
-            traj = model.sample_with_uncertainty(source, int_time, eval_cfg["num_repeat"])
-        else:
-            traj = model.sample(source, int_time)
-            traj = traj.unsqueeze(2)
-            
-        traj = traj.cpu()
-        pred_traj[f'{int(t0)}-{int(t1)}'] = traj[:eval_cfg["num_trajectory"]].numpy()
-        pred_samples[int(t1)] = traj[:, -1, 0].numpy()
+    t0, t1 = ds.T0, t_set[0]
+    source = ds.base_sample(eval_cfg["num_points"])["X"].float()
+    
+    int_time = torch.linspace(t0, t1, 151)
+
+    if hasattr(model, 'sample_with_uncertainty'):
+        traj = model.sample_with_uncertainty(source, int_time, eval_cfg["num_repeat"])
+    else:
+        traj = model.sample(source, int_time)
+        traj = traj.unsqueeze(2)
+    
+    r = torch.randperm(len(traj))
+    traj = traj[r]
+    traj = traj.cpu()
+    pred_traj = traj.numpy()
+    pred_samples = traj[:, -1, 0].numpy()
     
     return pred_samples, pred_traj
 
@@ -158,6 +166,21 @@ def plot_samples_and_trajectory(ax, samples, pred_traj, colors, reduce_type='mea
     elif reduce_type == 'mean':
         ax.set_title(r"$E[\hat{X}(k)]$")
 
+def make_snapshot_animation(axes, trajectory, colors):
+    reduced_trajectory = trajectory[:, :, 0, :]
+    L = len(axes)
+    idx = torch.linspace(0, reduced_trajectory.shape[1]-1, L).long()
+    cidx = torch.linspace(0, len(colors)-1, L).long()
+    for i, t in enumerate(idx):
+        p = i/(len(idx)-1)
+        ci = cidx[i]
+        axes[i].scatter(reduced_trajectory[:, t, 0], reduced_trajectory[:, t, 1], s=4.0, alpha=0.8, color=colors[ci])
+        if i == 0:
+            axes[i].set_title(r"$t=0$")
+        elif i == len(idx) - 1:
+            axes[i].set_title(r"$t=T$")
+        else:
+            axes[i].set_title(r"$t=$"+f"${p}$"+r"$T$")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

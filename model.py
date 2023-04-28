@@ -9,9 +9,9 @@ from utils import gaussian_nll, compute_emd2
 
 # from models.resnet import ResNet50
 from models.trajectorynet import TrajectoryNet
-from models.ot_sde import ForwardSDE, ReverseSDE
+from models.ot_sde import ForwardSDE, ReverseSDE, OpinionSDE
 from models.ot_flow import OT_flow
-from models.lagrangian import NullLagrangian, PotentialFreeLagrangian, NewtonianLagrangian, CellularLagrangian
+from models.lagrangian import EntropyLagrangian, NullLagrangian, PotentialFreeLagrangian, NewtonianLagrangian, CellularLagrangian, LQ
 
 ODE_MODEL_NAME = {
     "trajectorynet": TrajectoryNet,
@@ -21,14 +21,17 @@ SDE_MODEL_NAME = {
     # "model_name" : model class
     # "resnet50" : ResNet50
     "ito": ForwardSDE,
-    "rev-sde": ReverseSDE
+    "rev-sde": ReverseSDE,
+    "opinion": OpinionSDE
 }
 
 LAGRANGIAN_NAME = {
     "null": NullLagrangian,
     "potential-free": PotentialFreeLagrangian,
     "cellular": CellularLagrangian,
-    "newtonian": NewtonianLagrangian
+    "newtonian": NewtonianLagrangian,
+    "LQ": LQ,
+    "entropy": EntropyLagrangian
 }
 
 class SDENet(nn.Module):
@@ -39,9 +42,9 @@ class SDENet(nn.Module):
         self.criterion = self.net.criterion
         self.criterion_cfg = self.net.criterion_cfg
 
-    def forward(self, ts, x0, v0=None):
-        return self.net(ts, x0, v0)
-
+    def forward(self, ts, x0, v0=None, batch_idx=None):
+        return self.net(ts, x0, v0, batch_idx)
+    
     def step(self, batch, batch_idx, t_set, T0):
         xs = batch['x'].float().to(self.device)
         ts = batch['t'].float().to(self.device)
@@ -62,7 +65,7 @@ class SDENet(nn.Module):
                 x0, v0 = prev_x, prev_v
                 int_time = [float(t_set[i-1]), float(t)]
 
-            res = self.forward(int_time, x0, v0)
+            res = self.forward(int_time, x0, v0, batch_idx)
             xt_hat = res['xs'][-1]
 
             alpha_D = self.criterion_cfg['alpha_D'][i] if type(self.criterion_cfg['alpha_D']) is list else self.criterion_cfg['alpha_D']
@@ -106,7 +109,7 @@ class SDENet(nn.Module):
     @torch.no_grad()    
     def validation_step(self, batch, batch_idx, t_set, T0=0.0):
         self.eval()
-        score = self.step(batch, batch_idx, t_set, T0)
+        score = self.step(batch, -1, t_set, T0)
         return score
 
     @torch.no_grad()
@@ -252,7 +255,7 @@ class SDENet(nn.Module):
             amp.load_state_dict(checkpoint["amp"])
 
     def parameters_lr(self):
-        return self.net.parameters_lr()
+        return self.net.parameters()
 
     def clamp_parameters(self):
         self.net.clamp_parameters()

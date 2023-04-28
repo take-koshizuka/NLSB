@@ -1,0 +1,58 @@
+{
+    "seed": 57,
+    "epochs": 1000,
+    "LMT": -1,
+    "checkpoint_period": 100,
+    "train_size": 2048,
+    "val_size": 512,
+    "dataset": {
+        "name": "opinion_1k",
+        "batch_size": 256,
+        "val_batch_size": 512,
+        "t_0": 0.0,
+        "t_T": 3.0,
+        "dim": 1000,
+        "interval": 300,
+        "diffusion_std": 0.5,
+        "MF_cost": 0.0
+    },
+    "model_name": "opinion",
+    "model": {
+        "noise_type": "diagonal",
+        "sigma_type": "const",
+        "input_dim": 1000,
+        "brownian_size": 1000,
+        "drift_cfg": {
+            "nTh": 2,
+            "m": 32,
+            "use_t": true
+        },
+        "diffusion_cfg": {
+            "sigma": 0.5,
+            "tanh": false,
+            "use_t": false
+        },
+        "criterion_cfg": {
+            "alpha_D": 1.0,
+            "alpha_L": 0.001,
+            "alpha_R": 0.001,
+            "p": 2,
+            "blur": 0.05,
+            "mu": 0.0,
+            "std": 3.0
+        },
+        "solver_cfg": {
+            "adjoint": false,
+            "dt": 0.01,
+            "method": "euler",
+            "adaptive": false
+        }
+    },
+    "lagrangian_name": "entropy",
+    "lagrangian": {
+        "lm_U": 1.0
+    },
+    "optim": {
+        "lr": 0.001
+    }
+}

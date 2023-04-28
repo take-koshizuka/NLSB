@@ -1,7 +1,7 @@
 import torch
 from models.gmm import TimeDependentGMM
 from models.potential_2d import Box, Slit, HarmonicOscillator, Hill
-from models.potential import Cubic
+from models.potential import Cubic, Entropy
 
 POTENTIAL_NAME = {
     "box" : Box,
@@ -95,4 +95,28 @@ class NullLagrangian:
 
     def inv_L(self, t, x, f):
         return f
+
+class LQ:
+    def __init__(self, R, device='cpu'):
+        # P : (d, m), P.T : (m, d) -> A: (m, m)
+        self.R = torch.tensor(R).to(device)
+
+    def L(self, t, x, u):
+        return 0.5 * torch.sum(torch.pow(u, 2) * self.R, 1, keepdims=True)
+
+    def inv_L(self, t, x, f):
+        return f / self.R
     
+class EntropyLagrangian:
+    def __init__(self, pca_proj, lm_U=1.0):
+        self.U = Entropy
+        self.pca_proj = pca_proj
+        self.lm_U = lm_U
+    
+    def L(self, t, x, u, v, Ux):
+        #return 0.5 * torch.sum(torch.pow(u - v, 2), dim=1, keepdims=True)
+        return 0.5 * torch.sum(torch.pow(u + v, 2), dim=1, keepdims=True) - self.lm_U * Ux
+        
+    def inv_L(self, t, x, f, v):
+        return f - v
+        

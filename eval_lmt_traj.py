@@ -34,6 +34,11 @@ def main(eval_cfg, checkpoint_path, checkpoint_path_lmt):
     with open(train_config_path_lmt, 'r') as f:
         train_cfg_lmt = json.load(f)
 
+    if not 'use_v' in train_cfg['dataset']:
+        train_cfg['dataset']['use_v'] = False
+    if not 'use_v' in train_cfg_lmt['dataset']:
+        train_cfg_lmt['dataset']['use_v'] = False
+    
     assert train_cfg['dataset']['name'] == "scRNA"
     tr_ds = scRNASeq([train_cfg['dataset']['train_data_path']], train_cfg['dataset']['dim'], use_v=train_cfg['dataset']['use_v'])
     scaler = tr_ds.get_scaler()
@@ -59,6 +64,11 @@ def main(eval_cfg, checkpoint_path, checkpoint_path_lmt):
 
     # Define model
     model_name = train_cfg_lmt['model_name'].lower()
+    if not "lagrangian_name" in train_cfg_lmt:
+        train_cfg_lmt["lagrangian_name"] = "null"
+    if "lagrangian_cfg" in train_cfg_lmt['model']:
+        train_cfg_lmt['model'].pop("lagrangian_cfg")
+    
     if train_cfg_lmt['lagrangian_name'] == "null" or train_cfg_lmt['lagrangian_name'] == "potential-free":
         L_lmt = LAGRANGIAN_NAME[train_cfg_lmt['lagrangian_name']]()
     elif train_cfg['lagrangian_name'] == "cellular":

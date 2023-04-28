@@ -12,6 +12,7 @@ from dataset import scRNASeq
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME, LAGRANGIAN_NAME
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import scienceplots
 
 plt.style.use(['science', 'notebook'])
 

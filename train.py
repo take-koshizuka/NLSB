@@ -2,6 +2,7 @@ import random
 import json
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
@@ -10,15 +11,11 @@ from utils import EarlyStopping
 from tqdm import tqdm
 from pathlib import Path
 import argparse
+import gc
 
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME, LAGRANGIAN_NAME
-from dataset import OrnsteinUhlenbeckSDE_Dataset, BalancedBatchSampler, PotentialSDE_Dataset, UniformDataset, scRNASeq
+from dataset import MFGDataset, OrnsteinUhlenbeckSDE_Dataset, BalancedBatchSampler, PotentialSDE_Dataset, UniformDataset, scRNASeq, UniformDataset2
 
-try:
-    import apex.amp as amp
-    AMP = True
-except ImportError:
-    AMP = False
 
 def fix_seed(seed):
     # random
@@ -33,8 +30,12 @@ def fix_seed(seed):
 def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
     checkpoint_dir = Path(checkpoint_dir)
     device = torch.device(f"cuda:{gpu}" if torch.cuda.is_available() else "cpu")
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
     fix_seed(cfg['seed'])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(str(checkpoint_dir / "train_config.json"), "w") as f:
+        json.dump(cfg, f, indent=4)
     
     ## define dataset
     if cfg['dataset']['name'] == "ornstein-uhlenbeck-sde":
@@ -49,11 +50,21 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
     elif cfg['dataset']['name'] == "uniform":
         tr_ds = UniformDataset(device=device, t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], data_size=cfg['train_size'])
         va_ds = UniformDataset(device=device, t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], data_size=cfg['val_size'])
+    
+    elif cfg['dataset']['name'] == "uniform2":
+        tr_ds = UniformDataset2(device=device, t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], data_size=cfg['train_size'])
+        va_ds = UniformDataset2(device=device, t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], data_size=cfg['val_size'])
+    
     elif cfg['dataset']['name'] == "potential-sde":
         tr_ds = PotentialSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], data_size=cfg['train_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'],
                                         a=cfg['dataset']['a'], sigma=cfg['dataset']['sigma'])
         va_ds = PotentialSDE_Dataset(device=device, t_size=cfg['dataset']['t_size'], data_size=cfg['val_size'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], 
                                         a=cfg['dataset']['a'], sigma=cfg['dataset']['sigma'])
+    elif cfg['dataset']['name'] in ["opinion", "opinion_1k"]:
+        tr_ds = MFGDataset(problem_name=cfg['dataset']['name'], dim=cfg['dataset']['dim'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], batch_size=cfg['dataset']['batch_size'],
+                                data_size=cfg['train_size'], interval=cfg['dataset']['interval'], diffusion_std=cfg['dataset']['diffusion_std'], MF_cost=cfg['dataset']['MF_cost'], device=device)
+        va_ds = MFGDataset(problem_name=cfg['dataset']['name'], dim=cfg['dataset']['dim'], t_0=cfg['dataset']['t_0'], t_T = cfg['dataset']['t_T'], batch_size=cfg['dataset']['val_batch_size'],
+                                data_size=cfg['val_size'], interval=cfg['dataset']['interval'], diffusion_std=cfg['dataset']['diffusion_std'], MF_cost=cfg['dataset']['MF_cost'], device=device)
     else:
         raise ValueError("The dataset name does not exist.")
     
@@ -79,13 +90,17 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
     if model_name in SDE_MODEL_NAME:
         if cfg['lagrangian_name'] == "null" or cfg['lagrangian_name'] == "potential-free":
             L = LAGRANGIAN_NAME[cfg['lagrangian_name']]()
+        elif cfg['lagrangian_name'] == "LQ":
+            L = LAGRANGIAN_NAME[cfg['lagrangian_name']](**cfg['lagrangian'], device=device)
         elif cfg['lagrangian_name'] == "cellular":
             L = LAGRANGIAN_NAME["cellular"](tr_ds.full_data['X'], tr_ds.full_data['t'], **cfg['lagrangian'], device=device)
-        elif cfg['lagrangian_name'] == "newtonian":
+        elif cfg['lagrangian_name'] in ["newtonian"]:
             if cfg['dataset']['name'] == "potential-sde":
-                L = LAGRANGIAN_NAME["newtonian"](**cfg['lagrangian'], U=tr_ds.potential)
+                L = LAGRANGIAN_NAME[cfg['lagrangian_name']](**cfg['lagrangian'], U=tr_ds.potential)
             else:
-                L = LAGRANGIAN_NAME["newtonian"](**cfg['lagrangian'])
+                L = LAGRANGIAN_NAME[cfg['lagrangian_name']](**cfg['lagrangian'])
+        elif cfg['lagrangian_name'] in ["entropy"]:
+            L = LAGRANGIAN_NAME[cfg['lagrangian_name']](pca_proj=tr_ds.pca_proj,**cfg['lagrangian'])
         else:
             raise NotImplementedError
         net = SDE_MODEL_NAME[model_name](**cfg['model'], lagrangian=L)
@@ -97,19 +112,20 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
         MODEL = 'ode'
     else:
         raise ValueError("The model name does not exist.")
+    #if torch.cuda.device_count() > 1:
+    #    print("Let's use", torch.cuda.device_count(), "GPUs!")
+    #    # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
+    #    model.net = nn.DataParallel(model.net)
     model.to(device)
 
     # Define optimizer and scheduler (optional)
     optimizer = optim.Adam(model.parameters_lr(), lr=cfg['optim']['lr'])
     # scheduler = 
 
-    #early_stopping = EarlyStopping('avg_loss', 'min')
+    #early_stopping = EarlyStopping('avg_loss_D', 'min')
     early_stopping = EarlyStopping('avg_emd', 'min')
     init_epochs = 1
     max_epochs = cfg['epochs']
-
-    if AMP:
-        model, optimizer = amp.initialize(model, optimizer, opt_level="O1")
 
     if not resume_path == "":
         checkpoint = torch.load(resume_path, map_location=lambda storage, loc: storage)
@@ -125,29 +141,35 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
         ts = train_t_set
     elif MODEL == "ode":
         ts = [int(tr_ds.T0)] + train_t_set
-
+    
+    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
+    #scaler = None
     for i in tqdm(range(init_epochs, max_epochs + 1)):
         # training phase
         outputs = []
         for batch_idx, train_batch in enumerate(tqdm(tr_dl, leave=False)):
             train_batch['base'] = tr_ds.base_sample(cfg['dataset']['batch_size'])
             optimizer.zero_grad()
-            out = model.training_step(train_batch, batch_idx, train_t_set, tr_ds.T0)
-            outputs.append(out)
-            loss = out['loss']
-            if AMP:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
+            with torch.autocast(device_type=device_type, dtype=torch.float16):
+                out = model.training_step(train_batch, batch_idx, train_t_set, tr_ds.T0)
+                outputs.append(out)
+                loss = out['loss']
+
+            if scaler is None:
                 loss.backward()
+                optimizer.step()
+            else:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            
             del train_batch
-        
-            optimizer.step()
 
             if hasattr(model, 'clamp_parameters'):
                 model.clamp_parameters()
             # scheduler.step()
         train_result = model.training_epoch_end(outputs)
+        gc.collect()
 
         writer.add_scalar(f'loss/train', train_result['log']['avg_loss'], i)
         for j, t in enumerate(ts):
@@ -158,8 +180,9 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
         outputs = []    
         for batch_idx, val_batch in enumerate(tqdm(va_dl, leave=False)):
             val_batch['base'] = va_ds.base_sample(cfg['dataset']['val_batch_size'])
-            out = model.validation_step(val_batch, batch_idx, train_t_set, va_ds.T0)
-            outputs.append(out)
+            with torch.autocast(device_type=device_type, dtype=torch.float16):
+                out = model.validation_step(val_batch, batch_idx, train_t_set, va_ds.T0)
+                outputs.append(out)
             del val_batch
 
         val_result = model.validation_epoch_end(outputs)
@@ -185,12 +208,13 @@ def main(cfg, checkpoint_dir="checkpoints/tmp", resume_path="", gpu=0):
             state_dict = model.state_dict(optimizer)
             state_dict['epochs'] = i
             torch.save(state_dict, str(checkpoint_dir / f"model-{i}.pt"))
+
+        if tr_ds.resample:
+            tr_ds.resampling()
     
     best_state = early_stopping.best_state
     model.load_model(best_state)
     torch.save(best_state, str(checkpoint_dir / "best-model.pt"))
-    with open(str(checkpoint_dir / "train_config.json"), "w") as f:
-        json.dump(cfg, f, indent=4)
     
     writer.close()
 

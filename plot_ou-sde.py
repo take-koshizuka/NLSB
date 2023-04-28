@@ -9,6 +9,7 @@ from pathlib import Path
 from dataset import OrnsteinUhlenbeckSDE_Dataset
 from model import ODENet, SDENet, SDE_MODEL_NAME, ODE_MODEL_NAME
 import matplotlib.pyplot as plt
+import scienceplots
 
 def fix_seed(seed):
     # random

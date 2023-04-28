@@ -1,3 +1,4 @@
+from models.potential import Entropy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,7 +6,22 @@ import torchsde
 import geomloss
 import copy
 from models.lagrangian import NullLagrangian
+from mfg import opinion_lib
 
+from tqdm import tqdm
+import numpy as np
+import math
+
+
+def mahalanobis(u, v, cov):
+    B, N, D = u.size()
+    _, M, _ = v.size()
+    u_ = u.repeat(M, 1, 1, 1).reshape(B, N, M, D)
+    v_ = v.repeat(N, 1, 1, 1).reshape(B, N, M, D)
+    delta = u_ - v_
+    X = torch.matmul(delta, cov)
+    m = torch.sum(delta * X, dim=-1)
+    return m
 
 def antiderivTanh(x): # activation function aka the antiderivative of tanh
     return torch.abs(x) + torch.log(1+torch.exp(-2.0*torch.abs(x)))
@@ -471,7 +487,7 @@ class ForwardSDE(torchsde.SDEIto):
             x = F.pad(g, (0, 0, 0, 2+self.input_dim, 0, 0), value=0)
         return x
 
-    def forward(self, ts, x0, v0=None):
+    def forward(self, ts, x0, v0=None, batch_idx=None):
         aug_x0 = F.pad(x0, (0, 2, 0, 0), value=0)
         if not v0 is None:
             aug_x0 = torch.cat((aug_x0, v0), dim=1)
@@ -585,3 +601,356 @@ class ReverseSDE(torchsde.SDEIto):
 
     def parameters_lr(self):
         return self.df.parameters()
+
+
+class OpinionSDE(torchsde.SDEIto):
+    def __init__(self, noise_type, sigma_type, input_dim, brownian_size, drift_cfg, diffusion_cfg, criterion_cfg, solver_cfg, lagrangian=NullLagrangian()):
+        super(OpinionSDE, self).__init__(noise_type=noise_type)
+        
+        self.noise_type = noise_type
+        self.sigma_type = sigma_type
+        self.input_dim = input_dim
+        self.brownian_size = brownian_size
+        self.drift_cfg = drift_cfg
+        self.criterion_cfg = criterion_cfg
+        self.solver_cfg = solver_cfg
+
+        if noise_type == "scalar":
+            assert self.brownian_size == 1
+        elif noise_type == "diagonal":
+            assert self.brownian_size == self.input_dim
+        
+        self.phi = Phi(**drift_cfg, d=input_dim)
+
+        if 'use_t' in drift_cfg:
+            self.use_t_f = drift_cfg['use_t']
+        else:
+            self.use_t_f = True
+
+        if 'use_t' in diffusion_cfg:
+            self.use_t_g = diffusion_cfg['use_t']
+        else:
+            self.use_t_g = True
+
+        print(self.use_t_f, self.use_t_g)
+        if sigma_type == "const":
+            if noise_type == "scalar":
+                self.register_buffer('sigma', torch.as_tensor(diffusion_cfg['sigma']))
+            elif noise_type == "diagonal":
+                self.register_buffer('sigma', torch.as_tensor(diffusion_cfg['sigma']))
+
+        elif sigma_type == "param":
+            if noise_type == "scalar":
+                self.sigma = nn.Parameter(torch.randn(1, self.input_dim), requires_grad=True)
+            elif noise_type == "diagonal":
+                self.sigma = nn.Parameter(torch.randn(1, self.input_dim), requires_grad=True)
+            else:
+                raise NotImplementedError
+        else:
+            if sigma_type == "MLP-1":
+                cfg = dict(
+                    input_dim=input_dim+int(self.use_t_g),
+                    out_dim=1,
+                    hidden_dim=diffusion_cfg['hidden_dim'],
+                    num_layers=diffusion_cfg['num_layers'],
+                    tanh=diffusion_cfg['tanh']
+                )
+            
+            elif sigma_type == "MLP":
+                if noise_type == "diagonal":
+                    cfg = dict(
+                        input_dim=input_dim+int(self.use_t_g),
+                        out_dim=input_dim,
+                        hidden_dim=diffusion_cfg['hidden_dim'],
+                        num_layers=diffusion_cfg['num_layers'],
+                        tanh=diffusion_cfg['tanh']
+                    )
+                elif noise_type == "general":
+                    cfg = dict(
+                        input_dim=input_dim+int(self.use_t_g),
+                        out_dim=input_dim*brownian_size,
+                        hidden_dim=diffusion_cfg['hidden_dim'],
+                        num_layers=diffusion_cfg['num_layers'],
+                        tanh=diffusion_cfg['tanh']
+                    )
+                else:
+                    raise NotImplementedError
+            else:
+                raise NotImplementedError
+        
+            self.sigma = MLP(**cfg)
+
+        self.criterion_cfg = criterion_cfg
+        self.solver_cfg = solver_cfg
+        self.lagrangian = lagrangian
+
+        self.sdeint_fn = torchsde.sdeint_adjoint if solver_cfg['adjoint'] else torchsde.sdeint
+        #self.register_buffer('mu_true', torch.as_tensor(self.criterion_cfg['mu']))
+        #self.register_buffer('sigma_true', torch.as_tensor(self.criterion_cfg['std']))
+        #self.sigma_true = self.criterion_cfg['std'] * torch.eye(self.input_dim)
+        self.loss_fn = geomloss.SamplesLoss(loss='sinkhorn', p=criterion_cfg['p'], blur=criterion_cfg['blur'])
+        self.U = lagrangian.U
+        self.ts = set()
+
+    def f(self, t, x):  # Approximate posterior drift.
+        # xt = F.pad(x, (0, 1, 0, 0), value=t)
+        gradPhi = self.phi.grad(t, x)
+        v = self.prior_f(t, x)
+        f = self.lagrangian.inv_L(t, x, -gradPhi[:, :self.input_dim], v)
+        return f
+
+    def g(self, t, x):  # Shared diffusion.
+        if self.use_t_g:
+            x = F.pad(x, (0, 1, 0, 0), value=t)
+        else:
+            x = x
+        if self.sigma_type == "const" or self.sigma_type ==  "param":
+            if self.noise_type == "scalar":
+                g = self.sigma.repeat(x.size(0), 1, 1)
+            elif self.noise_type == "diagonal":
+                g = self.sigma.repeat(x.size(0), self.input_dim)
+            
+        elif self.sigma_type == "MLP-1":
+            if self.noise_type == "diagonal":
+                g = self.sigma(x).repeat(1, self.input_dim)
+            else:
+                g = self.sigma(x).repeat(1, self.input_dim, self.brownian_size)
+
+        elif self.sigma_type == "MLP":
+            if self.noise_type == "diagonal":
+                g = self.sigma(x).view(-1, self.input_dim)
+            else:
+                g = self.sigma(x).view(-1, self.input_dim, self.brownian_size)
+        return g
+
+    def null_f(self, t, x):
+        self.ts.add(round(t.item(), 5))
+        return x
+    def null_g(self, t, x):
+        return x
+
+    def f_aug(self, t, x_aug):
+        batch_size = len(x_aug)
+        x = x_aug[:, :self.input_dim]
+        v = self.prior_f(t, x)
+        Ux = self.Uxt(t, x).to(x.device)
+        # xt = F.pad(x, (0, 1, 0, 0), value=t)
+        if self.noise_type == "scalar" or self.noise_type == "diagonal":
+            gradPhi, diagHess = self.phi.diagHess(t, x)
+        else:
+            gradPhi = self.phi.grad(t, x)
+        # drift
+        f = self.lagrangian.inv_L(t, x, -gradPhi[:, :self.input_dim], v)
+        # cal dv
+        dv = self.lagrangian.L(t, x, f, v, Ux)
+        
+        # cal dr
+        g = self.g(t, x)
+        if self.noise_type == "scalar":
+            D = 0.5 * torch.pow(g.squeeze(2), 2)
+            prod_Hess_D = torch.sum(diagHess * D, axis=1)
+        elif self.noise_type == "diagonal":
+            D = 0.5 * torch.pow(g, 2)
+            prod_Hess_D = torch.sum(diagHess * D, axis=1)
+        else:
+            batch_idx = torch.arange(len(x))
+            hessian = torch.autograd.functional.jacobian(lambda x: self.phi.grad(t, x), x)[batch_idx, :self.input_dim, batch_idx, :self.input_dim]
+            D = 0.5 * torch.bmm(g, g.transpose(1, 2))
+            prod_Hess_D = torch.sum(hessian * D, dim=(1, 2))
+        
+        h = dv + torch.sum(gradPhi[:, :self.input_dim] * f, dim=1, keepdims=True)
+
+        if self.use_t_f:
+            # L1norm
+            dr = torch.abs(gradPhi[:,self.input_dim].unsqueeze(1) + prod_Hess_D.unsqueeze(1) + h)
+            #dr = torch.abs(gradPhi[:,self.input_dim].unsqueeze(1) + prod_Hess_D.unsqueeze(1) + h) ** 2
+        else:
+            dr = torch.abs(prod_Hess_D.unsqueeze(1) + h)
+            #dr = torch.abs(prod_Hess_D.unsqueeze(1) + h) ** 2
+        
+        x = torch.cat([f, dv, dr], dim=1)
+        return x
+
+    def g_aug(self, t, x_aug):
+        g = self.g(t, x_aug[:, :self.input_dim])
+        if self.noise_type == "diagonal":
+            x = F.pad(g, (0, 2, 0, 0), value=0)
+        else:
+            x = F.pad(g, (0, 0, 0, 2, 0, 0), value=0)
+        return x
+
+    def forward(self, ts, x0, v0=None, batch_idx=None):
+        if len(self.ts) == 0:
+            self.initialize_mf_drift(ts, x0)
+        
+        if batch_idx == 0 or len(self.Uxt_list) == 0:
+            self.build_Uxt(x0, self.tseq)
+
+        aug_x0 = F.pad(x0, (0, 2, 0, 0), value=0)
+        t1_ = min(ts[0] + self.solver_cfg['dt'], ts[1] - 1e-4 )
+        ts_ = torch.tensor([ ts[0], t1_])
+        xs = self.sdeint_fn(self, aug_x0, ts_,
+            method=self.solver_cfg['method'],
+            dt=self.solver_cfg['dt'],
+            adaptive=self.solver_cfg['adaptive'],
+            names={'drift': 'f_aug', 'diffusion': 'g_aug'})
+
+        aug_x0 = xs[-1, :, :self.input_dim+2]
+        ts[0] = t1_
+        # xT: (len(ts), batch_size, d+2)
+        if self.solver_cfg['adjoint']:
+            xs = self.sdeint_fn(self, aug_x0, ts, 
+                method=self.solver_cfg['method'], 
+                dt=self.solver_cfg['dt'],
+                adaptive=self.solver_cfg['adaptive'], 
+                adjoint_adaptive=self.solver_cfg['adjoint_adaptive'],
+                adjoint_method=self.solver_cfg['adjoint_method'], 
+                names={'drift': 'f_aug', 'diffusion': 'g_aug'})
+        else:
+            xs = self.sdeint_fn(self, aug_x0, ts, 
+                method=self.solver_cfg['method'], 
+                dt=self.solver_cfg['dt'],
+                adaptive=self.solver_cfg['adaptive'],
+                names={'drift': 'f_aug', 'diffusion': 'g_aug'})
+
+        #with open('rep.pickle', 'wb') as f:
+        #    pickle.dump([ T, VALUE], f)
+        loss_L = xs[-1][:, self.input_dim]
+        loss_R = xs[-1][:, self.input_dim+1]
+
+        xs[0] = F.pad(x0, (0, 2, 0, 0), value=0)
+        
+        assert xs.size(0) == len(ts)
+        return dict(xs=xs[:, :, :self.input_dim], loss_L=loss_L, loss_R=loss_R)
+
+    def criterion(self, x, x_hat, loss_L, loss_R, alpha_D, alpha_L, alpha_R):
+        loss_D = self.loss_fn(x_hat, x)
+        loss = alpha_D * loss_D + alpha_L * loss_L + alpha_R * loss_R
+        return dict(loss=loss, loss_D=loss_D, loss_L=loss_L, loss_R=loss_R)
+
+    def parameters_lr(self):
+        return self.parameters()
+
+    def clamp_parameters(self):
+        if self.sigma_type == "param":
+            self.sigma.data.clamp_(-5.0, 5.0)
+
+    @torch.no_grad()
+    def initialize_mf_drift(self, ts, x0) -> None:
+        ts_c = copy.deepcopy(ts)
+        t1_ = min(ts_c[0] + self.solver_cfg['dt'], ts_c[1] - 1e-4 )
+        Ts_c = torch.tensor([ ts_c[0], t1_])
+        _ = self.sdeint_fn(self, x0[:2], Ts_c,
+            method=self.solver_cfg['method'],
+            dt=self.solver_cfg['dt'],
+            adaptive=self.solver_cfg['adaptive'],
+            names={'drift': 'null_f', 'diffusion': 'null_g'})
+        ts_c[0] = t1_
+        _ = self.sdeint_fn(self, x0[:2], ts_c, 
+            method=self.solver_cfg['method'], 
+            dt=self.solver_cfg['dt'],
+            adaptive=self.solver_cfg['adaptive'],
+            names={'drift': 'null_f', 'diffusion': 'null_g'})
+        
+        self.tseq = torch.tensor(sorted(list(self.ts)))
+        self.f_mul = self.build_f_mul(self.tseq)
+        self.xis = self.build_xis(len(self.tseq), self.input_dim)
+        self.polarize_strength = 1.0 if self.input_dim == 2 else 6.0
+        self.tseq = self.tseq.cpu().numpy()
+        self.Uxt_list = []
+
+    @torch.no_grad()
+    def prior_f(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        b, nx = x.shape
+        assert nx == self.input_dim
+        t_idx = self.t_to_idx(t)
+        xi = self.xis[t_idx].to(x.device)
+
+        mf_drift = opinion_lib.compute_mean_drift_term(x, xi).to(x.device)
+        
+        fmul = self.f_mul[t_idx].to(x.device).unsqueeze(-1)
+        assert xi.shape == mf_drift.shape == (nx, )
+
+        f = self.polarize_strength * opinion_lib.opinion_f(x, mf_drift, xi)
+        assert f.shape == x.shape
+
+        f = fmul * f
+        assert f.shape == x.shape
+
+        return f
+
+    def build_f_mul(self, ts) -> torch.Tensor:
+        # set f_mul with some heuristic so that it doesn't diverge exponentially fast
+        # and yield bad normalization, since the more polarized the opinion is the faster it will grow
+        coeff = 8.0
+        f_mul = torch.clip(1.0 - torch.exp(coeff * (ts - ts[-1])) + 1e-5, min=1e-4, max=1.0)
+        f_mul = f_mul ** 5.0
+        return f_mul
+
+
+    def build_xis(self, interval, x_dim) -> torch.Tensor:
+        # Generate random unit vectors.
+        rng = np.random.default_rng(seed=4078213)
+        xis = rng.standard_normal([interval, x_dim])
+
+        # Construct a xis that has some degree of "continuous" over time, as a brownian motion.
+        xi = xis[0]
+        bm_xis = [xi]
+        std = 0.4
+        for t in range(1, interval):
+            xi = xi - (2.0 * xi) * 0.01 + std * math.sqrt(0.01) * xis[t]
+            bm_xis.append(xi)
+        assert len(bm_xis) == xis.shape[0]
+
+        xis = torch.Tensor(np.stack(bm_xis))
+        xis /= torch.linalg.norm(xis, dim=-1, keepdim=True)
+        return xis
+
+    def t_to_idx(self, t):
+        return int(((t - self.tseq[0]) + 1e-6) / self.solver_cfg['dt'])
+    
+    @torch.no_grad()
+    def build_Uxt(self, x0, ts=None):
+        if len(self.ts) == 0:
+            self.initialize_mf_drift(ts, x0)
+
+        del self.Uxt_list
+        xs = self.sdeint_fn(self, x0, torch.from_numpy(self.tseq).float(), 
+                method=self.solver_cfg['method'], 
+                dt=self.solver_cfg['dt'],
+                adaptive=self.solver_cfg['adaptive'],
+                names={'drift': 'f', 'diffusion': 'g'})
+
+        Uxt = []
+        t_size = len(xs)
+        mu_init = None
+        for ti in tqdm(range(t_size), leave=False):
+            Ux = self.U(self.lagrangian.pca_proj, xs[ti, :], num_components=5, mu_init=mu_init)
+            Uxt.append(Ux)
+            params = Ux.params()
+            mu_init = params['mu']
+        self.Uxt_list = Uxt
+        return Uxt
+    
+    def Uxt(self, t, x):
+        t_idx = self.t_to_idx(t)
+        Uxt = torch.nan_to_num(self.Uxt_list[t_idx](x))
+        return Uxt
+
+    """
+    def loss_fn(self, x, x_hat):
+        mu_hat = torch.mean(x_hat, dim=0)
+        sigma_hat = torch.cov(x_hat.T)
+        return self._calculate_frechet_distance(mu_hat, sigma_hat)
+
+        # Modified from: https://github.com/bioinf-jku/TTUR/blob/master/fid.py
+    def _calculate_frechet_distance(self, mu, sigma):
+        diff = mu - self.mu_true
+        # product might be almost singular
+        M = self.sigma_true * sigma
+        S = torch.linalg.eigvals(M.float()) + 1e-15
+        tr_covmean = S.sqrt().abs().sum()
+        return torch.sum(torch.pow(diff, 2)) + torch.trace(sigma) + (self.input_dim * self.sigma_true) - 2 * tr_covmean.to(mu)
+    """
+
+    
