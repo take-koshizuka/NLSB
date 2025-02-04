@@ -1,5 +1,5 @@
 # Neural Lagrangian Schrödinger bridge
-
+![Image](https://github.com/user-attachments/assets/f6d4ec41-18f7-404d-a641-c8d32ae193c6)
 # Train
 
 1. OU-sde data (artificial)
